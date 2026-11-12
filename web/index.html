@@ -38,7 +38,7 @@ ol,ul{padding-left:20px;margin:6px 0}li{margin:3px 0}
 code{background:#0d1117;padding:1px 5px;border-radius:4px;font-size:13px}
 table{border-collapse:collapse;width:100%;font-size:14px}td,th{border-bottom:1px solid var(--line);padding:6px;text-align:left;vertical-align:top}
 </style></head><body>
-<header><h1>🧊 Autonomous Thermal Controller</h1><span id="badge" class="badge">…</span><span id="dot" title="live connection"></span></header>
+<header><h1>🧊 Autonomous Thermal Controller</h1><span id="badge" class="badge">…</span><span id="where" class="mut"></span><span id="dot" title="live connection"></span></header>
 <nav>
  <div class="tabs"><button class="on" data-tab="dash">Dashboard</button><button data-tab="how">How it works</button></div>
  <label>Environment<select id="env"><option value="terrestrial">Terrestrial</option><option value="orbital">Orbital</option></select></label>
@@ -97,6 +97,11 @@ table{border-collapse:collapse;width:100%;font-size:14px}td,th{border-bottom:1px
   <tr><td><b>Performance</b></td><td>Coolest chips</td><td>Holds 25 °C and pre-cools before scheduled jobs</td><td>Never caps load for regeneration</td><td>Radiators out, holds about 20 °C</td></tr>
   <tr><td><b>Stealth</b></td><td>Minimal thermal signature</td><td>Holds room temperature, so almost no heat leaks out</td><td>Idle modules stay insulated</td><td>Stores heat in the water, radiates in a safe window</td></tr></table></div>
 
+ <div class="card"><h3>Where it runs</h3><ul>
+  <li><b>On a laptop:</b> <code>start.bat</code> runs the Python control loop as a FastAPI server, and this page streams from it.</li>
+  <li><b>Online:</b> with no server, this page loads Python into your browser (Pyodide, WebAssembly) and runs the exact same <code>coolant/core.py</code>.</li>
+  <li><b>On real hardware:</b> swap the simulator for a <code>HAL</code> class that reads real sensors and drives a real pump, radiators or server power caps.</li></ul></div>
+
  <div class="card"><h3>Guided demo</h3><div class="mut">Plays about a minute of scenarios with captions, for the environment and sink selected at the top.</div>
   <p><button id="go">▶ Run guided demo</button></p></div>
 </section>
@@ -106,10 +111,10 @@ table{border-collapse:collapse;width:100%;font-size:14px}td,th{border-bottom:1px
 const $ = s => document.querySelector(s), sleep = ms => new Promise(r => setTimeout(r, ms));
 const COL = {NORMAL:'#3fb950', WARNING:'#d29922', THROTTLE:'#f0883e', SHUTDOWN:'#f85149'};
 const ACT = {salt:'dosing rate', pcm:'PCM melted (avg)', orbit:'radiator deployment'};
-let hist = [], last = null, demoOn = false, scnKey = '', polling = null;
+let hist = [], last = null, demoOn = false, scnKey = '', polling = null, local = null;
 
-// ---------- talking to the backend ----------
-const api = async (path, method = 'GET', body) =>
+// ---------- talking to the backend: the Python server, or the same Python running in this browser ----------
+const api = async (path, method = 'GET', body) => local ? local(path, body) :
   (await fetch('/api/' + path, {method, headers:{'Content-Type':'application/json'}, body: body && JSON.stringify(body)})).json();
 async function post(path, body) {           // every POST returns a full snapshot with history
   const s = await api(path, 'POST', body);
@@ -234,8 +239,53 @@ function onSnapshot(s) {
   hist.push(...fresh); if (hist.length > 900) hist.splice(0, hist.length - 900);
   render(s); draw();
 }
+// ---------- no server (GitHub Pages or any static host): run coolant/core.py in the browser via Pyodide ----------
+const PYODIDE = 'https://cdn.jsdelivr.net/npm/pyodide@0.29.5/pyodide.js';
+const BRIDGE = `
+import json
+from core import Engine
+engine = Engine()
+
+def call(path, body):                 # mirrors the routes in coolant/server.py
+    body = json.loads(body) if body else {}
+    if path == "state":
+        return json.dumps(engine.snapshot(history=True))
+    if path == "setup":
+        return json.dumps(engine.setup(**body))
+    if path.startswith("scenario/"):
+        return json.dumps(engine.scenario(path.split("/", 1)[1]))
+    raise ValueError(path)
+
+def tick(since):                      # one 0.1 s tick of the control loop, like Engine._loop
+    for _ in range(engine.speed):
+        engine.step()
+    return json.dumps(engine.snapshot(since=since))
+`;
+async function startInBrowser() {
+  $('#sub').textContent = 'No server here, so the controller is starting inside your browser (Python via WebAssembly). The first load takes 10 to 20 seconds…';
+  await new Promise((ok, fail) => { const s = document.createElement('script'); s.src = PYODIDE; s.onload = ok; s.onerror = fail; document.head.append(s); });
+  const py = await loadPyodide();
+  py.FS.writeFile('core.py', await (await fetch('../coolant/core.py')).text());
+  py.runPython(BRIDGE);
+  const call = py.globals.get('call'), tick = py.globals.get('tick');
+  local = async (path, body) => JSON.parse(call(path, body ? JSON.stringify(body) : ''));
+  setInterval(() => onSnapshot(JSON.parse(tick(hist.length ? hist[hist.length - 1].t : -1))), 100);
+  $('#dot').style.background = COL.NORMAL; $('#dot').title = 'running in your browser';
+  $('#where').textContent = 'running in your browser';
+}
+
+// ---------- start: live updates from the server (Server-Sent Events, polling as a fallback) ----------
 (async () => {
+  let server = false;   // the laptop server serves this page at the site root; GitHub Pages serves it from /<repo>/web/
+  if (location.pathname === '/' || location.pathname === '/index.html')
+    try { const r = await fetch('/api/state'); server = r.ok && (r.headers.get('content-type') || '').includes('json'); } catch (e) {}
+  if (!server) {
+    try { await startInBrowser(); }
+    catch (e) { $('#sub').textContent = 'Could not start the controller in this browser. Check the internet connection and refresh.'; return; }
+  }
   const s = await api('state'); hist = s.history; render(s); draw();
+  if (!server) return;
+  $('#where').textContent = 'live server';
   const es = new EventSource('/api/stream');
   es.onopen = () => { $('#dot').style.background = COL.NORMAL; clearInterval(polling); polling = null; };
   es.onmessage = e => onSnapshot(JSON.parse(e.data));

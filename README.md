@@ -1,11 +1,6 @@
----
-title: Autonomous Thermal Controller
-emoji: 🧊
-sdk: docker
-app_port: 8000
----
-
 # 🧊 Autonomous Thermal Controller
+
+**Live demo:** https://callen-cox.github.io/solute-cooling/ (runs right in your browser, nothing to install)
 
 Cooling for small data centers that have **no room for a radiator**: an office building's server closet, a cramped site in a developing region, or a relay in orbit. The controller treats the coolant as a finite thermal sink and manages it autonomously. A deterministic **safety supervisor** sits above every optimisation mode and can always overrule it.
 
@@ -29,6 +24,12 @@ python -m coolant.server        # open http://localhost:8000
 python -m pytest                # safety and behaviour tests
 ```
 
+### Put it online for free (GitHub Pages)
+
+In the GitHub repo: **Settings → Pages → Build and deployment → Source: Deploy from a branch → Branch: `main`, folder `/ (root)` → Save**. After a minute or two the dashboard is live at `https://<username>.github.io/<repo>/`. With no server there, the page loads Python into the visitor's browser (Pyodide, WebAssembly) and runs the exact same `coolant/core.py`.
+
+### Notes
+
 Phones on the same Wi-Fi can open `http://<your-computer's-ip>:8000`. Docker: `docker build -t thermal . && docker run -p 8000:8000 thermal`.
 
 On the dashboard, pick the environment, sink, mode and speed at the top, trigger faults with the scenario buttons, and open **How it works → Run guided demo** for a captioned walkthrough.
@@ -37,7 +38,9 @@ On the dashboard, pick the environment, sink, mode and speed at the top, trigger
 
 - `coolant/core.py`: `Config` (thresholds), `Controller` (sense → supervise → act), the `HAL` hardware interface, the `Ground` and `Orbit` simulators, and `Engine` (control loop and event log).
 - `coolant/server.py`: FastAPI. `GET /api/state`, `GET /api/stream` (Server-Sent Events), `POST /api/setup` (`env`, `sink`, `mode`, `speed`), `POST /api/scenario/{name}`, `GET/POST /api/config`.
-- `web/index.html`: dashboard, How it works page and guided demo. No build step.
+- `web/index.html`: dashboard, How it works page and guided demo. No build step. It talks to the server when there is one, and otherwise runs `core.py` in the browser.
+- `index.html`: sends visitors of the GitHub Pages site to `web/`.
+- `start.bat`: Windows one-click launcher.
 - `tests/test_core.py`: safety and behaviour tests.
 
 ## Real hardware
