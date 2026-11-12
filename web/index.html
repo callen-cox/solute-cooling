@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Solute Cooling Controller</title>
+<style>
+:root{--bg:#0d1117;--card:#161b22;--line:#30363d;--tx:#e6edf3;--mut:#8b949e;--acc:#58a6ff}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.5 system-ui,sans-serif}
+header{display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--line)}
+h1{font-size:17px;margin:0;flex:1}h3{margin:0 0 6px}
+.badge{padding:4px 12px;border-radius:99px;font-weight:700;font-size:13px;color:#000;background:#3fb950}
+#dot{width:9px;height:9px;border-radius:50%;background:#f85149}
+nav{display:flex;gap:6px;padding:10px 16px}
+button{background:var(--card);color:var(--tx);border:1px solid var(--line);border-radius:8px;padding:8px 12px;font:inherit;cursor:pointer}
+button.on{border-color:var(--acc);color:var(--acc)}
+main{padding:0 16px 32px;max-width:1000px;margin:auto}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}.grid .card{margin:0}
+.big{font-size:44px;font-weight:700;line-height:1.1}.mid{font-size:26px;font-weight:700}.mut{color:var(--mut);font-size:13px}
+.bar{height:8px;background:var(--line);border-radius:4px;overflow:hidden;margin-top:6px}.bar i{display:block;height:100%;background:var(--acc)}
+canvas{width:100%;height:240px;display:block}
+.row{display:flex;gap:8px;flex-wrap:wrap}.card+.card,.grid+.card{margin-top:12px}
+#log div{font:12px ui-monospace,monospace;padding:3px 0;border-bottom:1px solid var(--line)}
+.ladder{display:flex;height:26px;position:relative;font-size:11px;color:#000;margin:10px 0}
+.ladder span{display:flex;align-items:center;justify-content:center;overflow:hidden}
+.ladder i{position:absolute;top:-4px;bottom:-4px;width:3px;background:#fff}
+#cap{color:var(--acc);min-height:3em}ol{padding-left:20px;margin:6px 0}
+</style></head><body>
+<header><h1>🧊 Solute Cooling Controller</h1><span id="badge" class="badge">…</span><span id="dot" title="connection"></span></header>
+<nav><button class="on" data-tab="dash">Dashboard</button><button data-tab="how">How it works</button></nav>
+<main>
+<section id="dash">
+ <div class="card" id="capcard" hidden><b>▶ Guided demo</b><div id="cap"></div></div>
+ <div class="card"><div class="mut">Coolant temperature</div><div class="big" id="T">–</div><div class="mut" id="sub"></div><canvas id="chart"></canvas></div>
+ <div class="grid">
+  <div class="card"><div class="mut">Solute dosing (g/s)</div><div class="mid" id="dose">–</div><div class="mut" id="dosesub"></div></div>
+  <div class="card"><div class="mut">Solute hopper</div><div class="mid" id="hop">–</div><div class="bar"><i id="hopb"></i></div></div>
+  <div class="card"><div class="mut">Saturation</div><div class="mid" id="sat">–</div><div class="bar"><i id="satb"></i></div></div>
+  <div class="card"><div class="mut">IT load allowed</div><div class="mid" id="load">–</div><div class="bar"><i id="loadb"></i></div></div>
+ </div>
+ <div class="card"><div class="mut">Try a scenario</div><div class="row" id="scn"></div></div>
+ <div class="card"><div class="mut">Event log</div><div id="log"></div></div>
+</section>
+<section id="how" hidden>
+ <div class="card"><h3>The idea</h3>Dissolving some salts in water <b>absorbs heat</b>, the chemistry behind an instant cold pack. Instead of a radiator, this system keeps a tank of coolant and doses solute in only when the servers need it. That suits places with no room or no outside access for a radiator.</div>
+ <div class="card"><h3>Safety ladder (live)</h3><div class="ladder" id="ladder"></div>
+  <div class="mut">White marker = current temperature. <b>Warn</b>: alert + maximum dosing. <b>Cut</b>: IT load halved. <b>Off</b>: safe shutdown, latched until cooled. Hardware damage is far above, with a guaranteed margin.</div></div>
+ <div class="card"><h3>Four steps, every second</h3><ol>
+  <li><b>Sense</b>: three sensors are median-voted. A lying sensor is outvoted; no usable data means fail-safe shutdown.</li>
+  <li><b>Predict</b>: the temperature trend is projected 60 s ahead, so cooling starts before it gets hot.</li>
+  <li><b>Dose</b>: a PI controller sets grams of solute per second and learns if the pump under-delivers.</li>
+  <li><b>Protect</b>: NORMAL → WARNING → THROTTLE → SHUTDOWN, with hysteresis so it can't flap on and off.</li></ol></div>
+ <div class="card"><h3>Guided demo</h3><div class="mut">Plays five scenarios in sequence on the live dashboard, with captions.</div><p><button id="go">▶ Run guided demo</button></p></div>
+</section>
+</main>
+<script>
+const $=s=>document.querySelector(s),sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const COL={NORMAL:'#3fb950',WARNING:'#d29922',THROTTLE:'#f0883e',SHUTDOWN:'#f85149'};
+let hist=[],cfg=null,flags={},demoOn=false;
+const api=async(p,m='GET')=>(await fetch('/api/'+p,{method:m})).json();
+function showTab(n){document.querySelectorAll('nav button').forEach(x=>x.classList.toggle('on',x.dataset.tab===n));$('#dash').hidden=n!=='dash';$('#how').hidden=n!=='how';draw()}
+document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>showTab(b.dataset.tab));
+const SC=[['spike','⚡ Load spike'],['sensor_fault','🌡 1 sensor fails'],['sensors_lost','🚫 All sensors lost'],['pump_fault','🔧 Pump degrades'],['refill','⛽ Refill hopper'],['reset','↺ Reset']];
+$('#scn').innerHTML=SC.map(([k,l])=>`<button data-k="${k}">${l}</button>`).join('');
+$('#scn').onclick=e=>{const k=e.target.dataset.k;if(k)api('scenario/'+k,'POST').then(render)};
+function ladder(T){const c=cfg,lo=25,hi=c.t_damage+3,p=v=>(v-lo)/(hi-lo)*100;
+ const seg=[[lo,c.t_warn,'#3fb950','OK'],[c.t_warn,c.t_throttle,'#d29922','Warn'],[c.t_throttle,c.t_shutdown,'#f0883e','Cut'],[c.t_shutdown,hi,'#f85149','Off']];
+ $('#ladder').innerHTML=seg.map(([a,b,col,l])=>`<span style="width:${p(b)-p(a)}%;background:${col}">${l}</span>`).join('')+`<i style="left:${Math.min(99,Math.max(0,p(T)))}%"></i>`}
+function render(s){cfg=s.config;flags=s.flags||{};
+ const b=$('#badge');b.textContent=s.state;b.style.background=COL[s.state];
+ $('#T').textContent=s.true_T.toFixed(1)+' °C';$('#T').style.color=COL[s.state];
+ $('#sub').textContent=`controller sees ${s.T.toFixed(1)}° · predicts ${s.T_pred.toFixed(1)}° in ${cfg.lookahead_s|0}s · ${s.reason}`;
+ $('#dose').textContent=s.delivered.toFixed(1);$('#dosesub').textContent=`commanded ${s.dose.toFixed(1)} · learned pump efficiency ${s.eff*100|0}%`;
+ $('#hop').textContent=s.hopper_kg.toFixed(1)+' kg';$('#hopb').style.width=Math.min(100,s.hopper_kg/s.hopper_cap_kg*100)+'%';
+ $('#sat').textContent=(s.saturation*100).toFixed(0)+'%';$('#satb').style.width=Math.min(100,s.saturation*100)+'%';
+ $('#load').textContent=(s.load*100|0)+'%';$('#loadb').style.width=s.load*100+'%';
+ document.querySelectorAll('#scn [data-k]').forEach(x=>x.classList.toggle('on',!!flags[x.dataset.k]));
+ $('#log').innerHTML=s.events.slice().reverse().map(e=>`<div>t+${e.t|0}s · ${e.msg}</div>`).join('');
+ ladder(s.true_T)}
+function draw(){const c=$('#chart');if(!cfg||!c.offsetWidth)return;
+ const d=devicePixelRatio||1,W=c.offsetWidth,H=c.offsetHeight;c.width=W*d;c.height=H*d;
+ const g=c.getContext('2d');g.scale(d,d);const lo=25,hi=cfg.t_damage+3,y=v=>H-(v-lo)/(hi-lo)*H;
+ g.font='11px system-ui';g.setLineDash([4,4]);
+ [[cfg.t_warn,'#d29922','warn'],[cfg.t_throttle,'#f0883e','throttle'],[cfg.t_shutdown,'#f85149','shutdown'],[cfg.t_damage,'#b62324','damage']].forEach(([v,col,l])=>{g.strokeStyle=g.fillStyle=col;g.beginPath();g.moveTo(0,y(v));g.lineTo(W,y(v));g.stroke();g.fillText(l+' '+v+'°',4,y(v)-3)});
+ g.setLineDash([]);if(hist.length<2)return;
+ const t0=hist[0].t,t1=hist[hist.length-1].t,x=t=>(t-t0)/Math.max(1,t1-t0)*W;
+ g.fillStyle='rgba(88,166,255,.25)';g.beginPath();g.moveTo(0,H);hist.forEach(p=>g.lineTo(x(p.t),H-p.dose/30*H*.3));g.lineTo(W,H);g.fill();
+ g.lineWidth=2;g.strokeStyle='#e6edf3';g.beginPath();hist.forEach((p,i)=>i?g.lineTo(x(p.t),y(p.T)):g.moveTo(x(p.t),y(p.T)));g.stroke()}
+addEventListener('resize',draw);
+const DEMO=[
+ ['Normal operation: it doses just enough solute to hold 30 °C.','reset',8],
+ ['Load spike (+3.5 kW). It predicts the rise and doses ahead of it.','spike',12],
+ ['One sensor starts lying (99 °C). The other two outvote it: still running, with a WARNING and maintenance alert.','sensor_fault',10],
+ ['The dosing pump degrades to 20%. It learns the shortfall and compensates. Watch the limits.','pump_fault',14],
+ ['All sensors lost. No trustworthy data, so it fails safe and shuts the servers down.','sensors_lost',10]];
+async function demo(){if(demoOn)return;demoOn=true;showTab('dash');$('#capcard').hidden=false;
+ for(const [t,k,w] of DEMO){$('#cap').textContent=t;if(k==='reset'||!flags[k])await api('scenario/'+k,'POST');await sleep(w*1000)}
+ $('#cap').textContent='Demo finished. Try the scenario buttons yourself, or hit Reset.';await sleep(6000);$('#capcard').hidden=true;demoOn=false}
+$('#go').onclick=demo;
+(async()=>{const s=await api('state');cfg=s.config;hist=s.history;render(s);draw();
+ const es=new EventSource('/api/stream');
+ es.onopen=()=>$('#dot').style.background='#3fb950';es.onerror=()=>$('#dot').style.background='#f85149';
+ es.onmessage=e=>{const s=JSON.parse(e.data);
+  if(s.new.length){if(hist.length&&s.new[0].t<=hist[hist.length-1].t)hist=[];hist.push(...s.new);if(hist.length>900)hist.splice(0,hist.length-900)}
+  render(s);draw()}})();
+</script></body></html>
