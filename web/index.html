@@ -1,105 +1,248 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Solute Cooling Controller</title>
+<title>Autonomous Thermal Controller</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧊</text></svg>">
 <style>
-:root{--bg:#0d1117;--card:#161b22;--line:#30363d;--tx:#e6edf3;--mut:#8b949e;--acc:#58a6ff}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.5 system-ui,sans-serif}
+:root{--bg:#0d1117;--card:#161b22;--line:#30363d;--tx:#e6edf3;--mut:#8b949e;--acc:#58a6ff;
+ --ok:#3fb950;--warn:#d29922;--cut:#f0883e;--off:#f85149}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
 header{display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--line)}
-h1{font-size:17px;margin:0;flex:1}h3{margin:0 0 6px}
-.badge{padding:4px 12px;border-radius:99px;font-weight:700;font-size:13px;color:#000;background:#3fb950}
-#dot{width:9px;height:9px;border-radius:50%;background:#f85149}
-nav{display:flex;gap:6px;padding:10px 16px}
-button{background:var(--card);color:var(--tx);border:1px solid var(--line);border-radius:8px;padding:8px 12px;font:inherit;cursor:pointer}
+h1{font-size:17px;margin:0;flex:1}h3{margin:0 0 6px;font-size:16px}
+.badge{padding:4px 12px;border-radius:99px;font-weight:700;font-size:13px;color:#000;background:var(--ok)}
+#dot{width:9px;height:9px;border-radius:50%;background:var(--off);flex:none}
+nav{display:flex;gap:8px;padding:10px 16px;flex-wrap:wrap;align-items:end}
+nav label{display:flex;flex-direction:column;font-size:11px;color:var(--mut);gap:2px}
+button,select{background:var(--card);color:var(--tx);border:1px solid var(--line);border-radius:8px;padding:8px 12px;font:inherit;cursor:pointer}
+select:disabled{opacity:.4}
 button.on{border-color:var(--acc);color:var(--acc)}
-main{padding:0 16px 32px;max-width:1000px;margin:auto}
+button:hover,select:hover{border-color:var(--mut)}
+.tabs{display:flex;gap:6px;margin-right:auto}
+main{padding:0 16px 40px;max-width:1040px;margin:auto}
 .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}.grid .card{margin:0}
-.big{font-size:44px;font-weight:700;line-height:1.1}.mid{font-size:26px;font-weight:700}.mut{color:var(--mut);font-size:13px}
-.bar{height:8px;background:var(--line);border-radius:4px;overflow:hidden;margin-top:6px}.bar i{display:block;height:100%;background:var(--acc)}
-canvas{width:100%;height:240px;display:block}
-.row{display:flex;gap:8px;flex-wrap:wrap}.card+.card,.grid+.card{margin-top:12px}
-#log div{font:12px ui-monospace,monospace;padding:3px 0;border-bottom:1px solid var(--line)}
-.ladder{display:flex;height:26px;position:relative;font-size:11px;color:#000;margin:10px 0}
-.ladder span{display:flex;align-items:center;justify-content:center;overflow:hidden}
-.ladder i{position:absolute;top:-4px;bottom:-4px;width:3px;background:#fff}
-#cap{color:var(--acc);min-height:3em}ol{padding-left:20px;margin:6px 0}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:12px}.grid .card{margin:0}
+.big{font-size:44px;font-weight:700;line-height:1.1}.mid{font-size:24px;font-weight:700}.mut{color:var(--mut);font-size:13px}
+.bar{height:8px;background:var(--line);border-radius:4px;overflow:hidden;margin:6px 0 4px}.bar i{display:block;height:100%;background:var(--acc)}
+canvas{width:100%;height:250px;display:block;margin-top:8px}
+.legend{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:var(--mut)}
+.legend b{display:inline-block;width:14px;height:3px;vertical-align:middle;margin-right:5px}
+.row{display:flex;gap:8px;flex-wrap:wrap}
+#log div{font:12px ui-monospace,Consolas,monospace;padding:4px 0;border-bottom:1px solid var(--line)}
+#capcard{border-color:var(--acc)}#cap{color:var(--acc);min-height:3em;font-size:16px}
+.ladder{display:flex;height:28px;position:relative;font-size:11px;color:#000;margin:10px 0;border-radius:6px;overflow:hidden}
+.ladder span{display:flex;align-items:center;justify-content:center;overflow:hidden;white-space:nowrap}
+.ladder i{position:absolute;top:0;bottom:0;width:3px;background:#fff;box-shadow:0 0 0 1px #000}
+.stack{display:grid;gap:6px}.layer{border-left:4px solid var(--c);background:#0d1117;padding:8px 12px;border-radius:6px}
+ol,ul{padding-left:20px;margin:6px 0}li{margin:3px 0}
+code{background:#0d1117;padding:1px 5px;border-radius:4px;font-size:13px}
+table{border-collapse:collapse;width:100%;font-size:14px}td,th{border-bottom:1px solid var(--line);padding:6px;text-align:left;vertical-align:top}
 </style></head><body>
-<header><h1>🧊 Solute Cooling Controller</h1><span id="badge" class="badge">…</span><span id="dot" title="connection"></span></header>
-<nav><button class="on" data-tab="dash">Dashboard</button><button data-tab="how">How it works</button></nav>
+<header><h1>🧊 Autonomous Thermal Controller</h1><span id="badge" class="badge">…</span><span id="dot" title="live connection"></span></header>
+<nav>
+ <div class="tabs"><button class="on" data-tab="dash">Dashboard</button><button data-tab="how">How it works</button></div>
+ <label>Environment<select id="env"><option value="terrestrial">Terrestrial</option><option value="orbital">Orbital</option></select></label>
+ <label>Cooling sink<select id="sink"><option value="salt">Salt dissolution</option><option value="pcm">PCM (reusable)</option></select></label>
+ <label>Mode<select id="mode"><option value="efficiency">Efficiency</option><option value="performance">Performance</option><option value="stealth">Stealth</option></select></label>
+ <label>Speed<select id="speed"><option value="1">1×</option><option value="5">5×</option><option value="20">20×</option></select></label>
+</nav>
 <main>
 <section id="dash">
  <div class="card" id="capcard" hidden><b>▶ Guided demo</b><div id="cap"></div></div>
- <div class="card"><div class="mut">Coolant temperature</div><div class="big" id="T">–</div><div class="mut" id="sub"></div><canvas id="chart"></canvas></div>
- <div class="grid">
-  <div class="card"><div class="mut">Solute dosing (g/s)</div><div class="mid" id="dose">–</div><div class="mut" id="dosesub"></div></div>
-  <div class="card"><div class="mut">Solute hopper</div><div class="mid" id="hop">–</div><div class="bar"><i id="hopb"></i></div></div>
-  <div class="card"><div class="mut">Saturation</div><div class="mid" id="sat">–</div><div class="bar"><i id="satb"></i></div></div>
-  <div class="card"><div class="mut">IT load allowed</div><div class="mid" id="load">–</div><div class="bar"><i id="loadb"></i></div></div>
+ <div class="card">
+  <div class="mut">Coolant temperature</div><div class="big" id="T">–</div><div class="mut" id="sub"></div>
+  <canvas id="chart"></canvas>
+  <div class="legend"><span><b style="background:#e6edf3"></b>coolant °C</span><span><b style="background:#58a6ff"></b><span id="actlbl">dosing</span></span><span>dashed = setpoint and safety limits</span></div>
  </div>
- <div class="card"><div class="mut">Try a scenario</div><div class="row" id="scn"></div></div>
- <div class="card"><div class="mut">Event log</div><div id="log"></div></div>
+ <div class="grid" id="tiles"></div>
+ <div class="card"><div class="mut">Try a scenario (click again to turn off)</div><div class="row" id="scn"></div></div>
+ <div class="card"><div class="mut">Event log (newest first)</div><div id="log"></div></div>
 </section>
+
 <section id="how" hidden>
- <div class="card"><h3>The idea</h3>Dissolving some salts in water <b>absorbs heat</b>, the chemistry behind an instant cold pack. Instead of a radiator, this system keeps a tank of coolant and doses solute in only when the servers need it. That suits places with no room or no outside access for a radiator.</div>
+ <div class="card"><h3>The idea</h3>
+  Small data centers often have no room for a radiator: an office building's server closet, a cramped site in a developing region, or a relay in orbit.
+  This controller treats the coolant as a <b>finite thermal sink</b> and manages it autonomously, with a safety supervisor that can always overrule it.</div>
+
+ <div class="card"><h3>Three layers, every control step</h3><div class="stack">
+  <div class="layer" style="--c:var(--off)"><b>1 · Safety supervisor</b> (highest priority) overrides everything: NORMAL → WARNING → THROTTLE → SHUTDOWN.</div>
+  <div class="layer" style="--c:var(--warn)"><b>2 · Optimisation mode</b> Efficiency, Performance or Stealth decides how to spend the cooling.</div>
+  <div class="layer" style="--c:var(--acc)"><b>3 · Cooling sink</b> Salt dissolution, PCM modules or orbital radiators do the physical work.</div></div></div>
+
  <div class="card"><h3>Safety ladder (live)</h3><div class="ladder" id="ladder"></div>
-  <div class="mut">White marker = current temperature. <b>Warn</b>: alert + maximum dosing. <b>Cut</b>: IT load halved. <b>Off</b>: safe shutdown, latched until cooled. Hardware damage is far above, with a guaranteed margin.</div></div>
- <div class="card"><h3>Four steps, every second</h3><ol>
-  <li><b>Sense</b>: three sensors are median-voted. A lying sensor is outvoted; no usable data means fail-safe shutdown.</li>
-  <li><b>Predict</b>: the temperature trend is projected 60 s ahead, so cooling starts before it gets hot.</li>
-  <li><b>Dose</b>: a PI controller sets grams of solute per second and learns if the pump under-delivers.</li>
-  <li><b>Protect</b>: NORMAL → WARNING → THROTTLE → SHUTDOWN, with hysteresis so it can't flap on and off.</li></ol></div>
- <div class="card"><h3>Guided demo</h3><div class="mut">Plays five scenarios in sequence on the live dashboard, with captions.</div><p><button id="go">▶ Run guided demo</button></p></div>
+  <div class="mut">White marker = current temperature. <b>Warn</b> (52 °C): alert and maximum cooling. <b>Cut</b> (56 °C): IT load halved, held at least 5 min.
+  <b>Off</b> (60 °C, T<sub>safe</sub>): clean shutdown, latched until the coolant is back under 46 °C. Hardware damage is at 85 °C, and the config refuses any setting with under 10 °C of margin.
+  In orbit a freeze guard also protects the bottom of the range.</div></div>
+
+ <div class="card"><h3>Every step</h3><ol>
+  <li><b>Sense</b>: three sensors are median-voted. One liar is outvoted. With no usable data it assumes the worst and shuts down.</li>
+  <li><b>Predict</b>: the temperature trend is projected 60 s ahead (10 min in orbit), and server power is fed forward, so cooling starts before the temperature moves.</li>
+  <li><b>Supervise</b>: the ladder above. Running low on cooling escalates early. Running out triggers a graceful power-down.</li>
+  <li><b>Act</b>: the mode drives the sink (below).</li></ol></div>
+
+ <div class="card"><h3>The three cooling sinks</h3><table>
+  <tr><th>Sink</th><th>Physics</th><th>What the controller does</th></tr>
+  <tr><td><b>Salt</b><br>terrestrial</td><td>Dissolving NH<sub>4</sub>Cl absorbs 277 J/g (ΔH<sub>soln</sub> = +14.8 kJ/mol), like an instant cold pack. It is consumed: about 13 kg per kWh.</td>
+   <td>Doses grams per second (feedforward + predictive PI), learns if the pump under-delivers, and tracks saturation against the coldest planned temperature, because NH<sub>4</sub>Cl is less soluble when cold.
+   At 85% it swaps to a reserve tank. With no reserve it stops dosing before crystals clog the cold plates.</td></tr>
+  <tr><td><b>PCM</b><br>terrestrial</td><td>Sodium thiosulfate pentahydrate melts at 48.3 °C and absorbs about 200 kJ/kg doing it, then re-solidifies to be reused.</td>
+   <td>Runs one module at a time and swaps when it is spent. When the modules are half spent it schedules a low-power state so idle ones re-solidify.</td></tr>
+  <tr><td><b>Radiators</b><br>orbital</td><td>No air in space, so heat only leaves as radiation: Q = εσAT⁴. Sunlight adds αSA·cos θ.</td>
+   <td>Keeps the radiators edge-on to the sun. If they absorb more than they emit (stuck facing the sun), it retracts them behind the MLI shield.
+   A freeze guard (heater, sun-facing, retraction) keeps the water above 5 °C.</td></tr></table></div>
+
+ <div class="card"><h3>Modes</h3><table>
+  <tr><th>Mode</th><th>Goal</th><th>Salt</th><th>PCM</th><th>Orbit</th></tr>
+  <tr><td><b>Efficiency</b></td><td>Save consumables and wear</td><td>Floats up to 40 °C, letting the room carry some heat</td><td>Schedules regeneration</td><td>Floats near 28 °C, slews only when needed</td></tr>
+  <tr><td><b>Performance</b></td><td>Coolest chips</td><td>Holds 25 °C and pre-cools before scheduled jobs</td><td>Never caps load for regeneration</td><td>Radiators out, holds about 20 °C</td></tr>
+  <tr><td><b>Stealth</b></td><td>Minimal thermal signature</td><td>Holds room temperature, so almost no heat leaks out</td><td>Idle modules stay insulated</td><td>Stores heat in the water, radiates in a safe window</td></tr></table></div>
+
+ <div class="card"><h3>Guided demo</h3><div class="mut">Plays about a minute of scenarios with captions, for the environment and sink selected at the top.</div>
+  <p><button id="go">▶ Run guided demo</button></p></div>
 </section>
 </main>
+
 <script>
-const $=s=>document.querySelector(s),sleep=ms=>new Promise(r=>setTimeout(r,ms));
-const COL={NORMAL:'#3fb950',WARNING:'#d29922',THROTTLE:'#f0883e',SHUTDOWN:'#f85149'};
-let hist=[],cfg=null,flags={},demoOn=false;
-const api=async(p,m='GET')=>(await fetch('/api/'+p,{method:m})).json();
-function showTab(n){document.querySelectorAll('nav button').forEach(x=>x.classList.toggle('on',x.dataset.tab===n));$('#dash').hidden=n!=='dash';$('#how').hidden=n!=='how';draw()}
-document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>showTab(b.dataset.tab));
-const SC=[['spike','⚡ Load spike'],['sensor_fault','🌡 1 sensor fails'],['sensors_lost','🚫 All sensors lost'],['pump_fault','🔧 Pump degrades'],['refill','⛽ Refill hopper'],['reset','↺ Reset']];
-$('#scn').innerHTML=SC.map(([k,l])=>`<button data-k="${k}">${l}</button>`).join('');
-$('#scn').onclick=e=>{const k=e.target.dataset.k;if(k)api('scenario/'+k,'POST').then(render)};
-function ladder(T){const c=cfg,lo=25,hi=c.t_damage+3,p=v=>(v-lo)/(hi-lo)*100;
- const seg=[[lo,c.t_warn,'#3fb950','OK'],[c.t_warn,c.t_throttle,'#d29922','Warn'],[c.t_throttle,c.t_shutdown,'#f0883e','Cut'],[c.t_shutdown,hi,'#f85149','Off']];
- $('#ladder').innerHTML=seg.map(([a,b,col,l])=>`<span style="width:${p(b)-p(a)}%;background:${col}">${l}</span>`).join('')+`<i style="left:${Math.min(99,Math.max(0,p(T)))}%"></i>`}
-function render(s){cfg=s.config;flags=s.flags||{};
- const b=$('#badge');b.textContent=s.state;b.style.background=COL[s.state];
- $('#T').textContent=s.true_T.toFixed(1)+' °C';$('#T').style.color=COL[s.state];
- $('#sub').textContent=`controller sees ${s.T.toFixed(1)}° · predicts ${s.T_pred.toFixed(1)}° in ${cfg.lookahead_s|0}s · ${s.reason}`;
- $('#dose').textContent=s.delivered.toFixed(1);$('#dosesub').textContent=`commanded ${s.dose.toFixed(1)} · learned pump efficiency ${s.eff*100|0}%`;
- $('#hop').textContent=s.hopper_kg.toFixed(1)+' kg';$('#hopb').style.width=Math.min(100,s.hopper_kg/s.hopper_cap_kg*100)+'%';
- $('#sat').textContent=(s.saturation*100).toFixed(0)+'%';$('#satb').style.width=Math.min(100,s.saturation*100)+'%';
- $('#load').textContent=(s.load*100|0)+'%';$('#loadb').style.width=s.load*100+'%';
- document.querySelectorAll('#scn [data-k]').forEach(x=>x.classList.toggle('on',!!flags[x.dataset.k]));
- $('#log').innerHTML=s.events.slice().reverse().map(e=>`<div>t+${e.t|0}s · ${e.msg}</div>`).join('');
- ladder(s.true_T)}
-function draw(){const c=$('#chart');if(!cfg||!c.offsetWidth)return;
- const d=devicePixelRatio||1,W=c.offsetWidth,H=c.offsetHeight;c.width=W*d;c.height=H*d;
- const g=c.getContext('2d');g.scale(d,d);const lo=25,hi=cfg.t_damage+3,y=v=>H-(v-lo)/(hi-lo)*H;
- g.font='11px system-ui';g.setLineDash([4,4]);
- [[cfg.t_warn,'#d29922','warn'],[cfg.t_throttle,'#f0883e','throttle'],[cfg.t_shutdown,'#f85149','shutdown'],[cfg.t_damage,'#b62324','damage']].forEach(([v,col,l])=>{g.strokeStyle=g.fillStyle=col;g.beginPath();g.moveTo(0,y(v));g.lineTo(W,y(v));g.stroke();g.fillText(l+' '+v+'°',4,y(v)-3)});
- g.setLineDash([]);if(hist.length<2)return;
- const t0=hist[0].t,t1=hist[hist.length-1].t,x=t=>(t-t0)/Math.max(1,t1-t0)*W;
- g.fillStyle='rgba(88,166,255,.25)';g.beginPath();g.moveTo(0,H);hist.forEach(p=>g.lineTo(x(p.t),H-p.dose/30*H*.3));g.lineTo(W,H);g.fill();
- g.lineWidth=2;g.strokeStyle='#e6edf3';g.beginPath();hist.forEach((p,i)=>i?g.lineTo(x(p.t),y(p.T)):g.moveTo(x(p.t),y(p.T)));g.stroke()}
-addEventListener('resize',draw);
-const DEMO=[
- ['Normal operation: it doses just enough solute to hold 30 °C.','reset',8],
- ['Load spike (+3.5 kW). It predicts the rise and doses ahead of it.','spike',12],
- ['One sensor starts lying (99 °C). The other two outvote it: still running, with a WARNING and maintenance alert.','sensor_fault',10],
- ['The dosing pump degrades to 20%. It learns the shortfall and compensates. Watch the limits.','pump_fault',14],
- ['All sensors lost. No trustworthy data, so it fails safe and shuts the servers down.','sensors_lost',10]];
-async function demo(){if(demoOn)return;demoOn=true;showTab('dash');$('#capcard').hidden=false;
- for(const [t,k,w] of DEMO){$('#cap').textContent=t;if(k==='reset'||!flags[k])await api('scenario/'+k,'POST');await sleep(w*1000)}
- $('#cap').textContent='Demo finished. Try the scenario buttons yourself, or hit Reset.';await sleep(6000);$('#capcard').hidden=true;demoOn=false}
-$('#go').onclick=demo;
-(async()=>{const s=await api('state');cfg=s.config;hist=s.history;render(s);draw();
- const es=new EventSource('/api/stream');
- es.onopen=()=>$('#dot').style.background='#3fb950';es.onerror=()=>$('#dot').style.background='#f85149';
- es.onmessage=e=>{const s=JSON.parse(e.data);
-  if(s.new.length){if(hist.length&&s.new[0].t<=hist[hist.length-1].t)hist=[];hist.push(...s.new);if(hist.length>900)hist.splice(0,hist.length-900)}
-  render(s);draw()}})();
-</script></body></html>
+const $ = s => document.querySelector(s), sleep = ms => new Promise(r => setTimeout(r, ms));
+const COL = {NORMAL:'#3fb950', WARNING:'#d29922', THROTTLE:'#f0883e', SHUTDOWN:'#f85149'};
+const ACT = {salt:'dosing rate', pcm:'PCM melted (avg)', orbit:'radiator deployment'};
+let hist = [], last = null, demoOn = false, scnKey = '', polling = null;
+
+// ---------- talking to the backend ----------
+const api = async (path, method = 'GET', body) =>
+  (await fetch('/api/' + path, {method, headers:{'Content-Type':'application/json'}, body: body && JSON.stringify(body)})).json();
+async function post(path, body) {           // every POST returns a full snapshot with history
+  const s = await api(path, 'POST', body);
+  if (s.history) { hist = s.history; render(s); draw(); }
+  return s;
+}
+
+// ---------- tabs and selectors ----------
+function showTab(name) {
+  document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === name));
+  $('#dash').hidden = name !== 'dash'; $('#how').hidden = name !== 'how'; draw();
+}
+document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => showTab(b.dataset.tab));
+['env', 'sink', 'mode', 'speed'].forEach(k => $('#' + k).onchange = () =>
+  post('setup', {[k]: k === 'speed' ? +$('#speed').value : $('#' + k).value}));
+$('#scn').onclick = e => { const k = e.target.dataset.k; if (k) post('scenario/' + k); };
+
+// ---------- rendering ----------
+function render(s) {
+  last = s;
+  const b = $('#badge'); b.textContent = s.state; b.style.background = COL[s.state];
+  for (const k of ['env', 'sink', 'mode', 'speed'])
+    if (document.activeElement !== $('#' + k)) $('#' + k).value = s.options[k];
+  $('#sink').disabled = s.options.env === 'orbital';
+  $('#T').textContent = s.true_T.toFixed(1) + ' °C'; $('#T').style.color = COL[s.state];
+  $('#sub').textContent = (s.health === 2 ? 'controller has no trustworthy reading, assuming the worst'
+      : `controller sees ${s.T.toFixed(1)}° · predicts ${s.T_pred.toFixed(1)}°`) + ` · setpoint ${s.setpoint}° · ${s.reason}`;
+  $('#actlbl').textContent = ACT[s.kind] || 'actuation';
+  $('#tiles').innerHTML = s.tiles.map(t => `<div class="card"><div class="mut">${t.label}</div><div class="mid">${t.value}</div>` +
+      (t.pct == null ? '' : `<div class="bar"><i style="width:${Math.max(0, Math.min(100, t.pct))}%"></i></div>`) +
+      `<div class="mut">${t.sub}</div></div>`).join('');
+  const key = JSON.stringify(s.scenarios);
+  if (key !== scnKey) { scnKey = key; $('#scn').innerHTML = s.scenarios.map(([k, l]) => `<button data-k="${k}">${l}</button>`).join(''); }
+  document.querySelectorAll('#scn [data-k]').forEach(x => x.classList.toggle('on', !!s.flags[x.dataset.k]));
+  $('#log').innerHTML = s.events.slice().reverse().map(e => `<div>t+${Math.round(e.t)} s · ${e.msg}</div>`).join('');
+  ladder(s);
+}
+
+function ladder(s) {
+  const c = s.config, orbit = s.kind === 'orbit', lo = 0, hi = c.t_damage + 3, p = v => (v - lo) / (hi - lo) * 100;
+  const seg = (orbit ? [[lo, c.t_freeze, '#1f6feb', 'Freeze'], [c.t_freeze, c.t_freeze_warn, '#79c0ff', 'Guard'], [c.t_freeze_warn, c.t_warn, COL.NORMAL, 'OK']]
+                     : [[lo, c.t_warn, COL.NORMAL, 'OK']])
+    .concat([[c.t_warn, c.t_throttle, COL.WARNING, 'Warn'], [c.t_throttle, c.t_shutdown, COL.THROTTLE, 'Cut'],
+             [c.t_shutdown, c.t_damage, COL.SHUTDOWN, 'Off'], [c.t_damage, hi, '#8b1d1d', '']]);
+  $('#ladder').innerHTML = seg.map(([a, b, col, l]) => `<span style="width:${p(b) - p(a)}%;background:${col}">${p(b) - p(a) > 3.5 ? l : ''}</span>`).join('') +
+    `<i style="left:${Math.min(99.5, Math.max(0, p(s.true_T)))}%"></i>`;
+}
+
+function draw() {
+  const cv = $('#chart'); if (!last || !cv.offsetWidth) return;
+  const c = last.config, dpr = devicePixelRatio || 1, W = cv.offsetWidth, H = cv.offsetHeight;
+  cv.width = W * dpr; cv.height = H * dpr;
+  const g = cv.getContext('2d'); g.scale(dpr, dpr);
+  const lo = last.kind === 'orbit' ? 0 : 15, hi = c.t_shutdown + 8, y = v => H - (v - lo) / (hi - lo) * H;
+  g.font = '11px system-ui'; g.setLineDash([4, 4]); g.lineWidth = 1;
+  const lines = [[c.t_warn, COL.WARNING, 'warn'], [c.t_throttle, COL.THROTTLE, 'throttle'], [c.t_shutdown, COL.SHUTDOWN, 'shutdown (T safe)']];
+  if (last.kind === 'pcm') lines.push([48.3, '#39c5cf', 'PCM melts']);          // the PCM sets the temperature
+  else lines.push([last.setpoint, '#8b949e', 'setpoint']);
+  if (last.kind === 'orbit') lines.push([c.t_freeze_warn, '#79c0ff', 'freeze guard'], [c.t_freeze, '#1f6feb', 'freeze']);
+  for (const [v, col, l] of lines) {
+    g.strokeStyle = g.fillStyle = col; g.beginPath(); g.moveTo(0, y(v)); g.lineTo(W, y(v)); g.stroke();
+    g.fillText(`${l} ${v}°`, 4, y(v) - 3);
+  }
+  g.setLineDash([]);
+  if (hist.length < 2) return;
+  const t0 = hist[0].t, t1 = hist[hist.length - 1].t, x = t => (t - t0) / Math.max(1, t1 - t0) * W;
+  g.fillStyle = 'rgba(88,166,255,.28)'; g.beginPath(); g.moveTo(0, H);
+  for (const p of hist) g.lineTo(x(p.t), H - p.act * H * 0.3);
+  g.lineTo(W, H); g.fill();
+  g.lineWidth = 2; g.strokeStyle = '#e6edf3'; g.beginPath();
+  hist.forEach((p, i) => i ? g.lineTo(x(p.t), y(p.T)) : g.moveTo(x(p.t), y(p.T))); g.stroke();
+}
+addEventListener('resize', draw);
+
+// ---------- guided demo: [caption, actions, seconds] ----------
+// actions: reset | mode=X | speed=N | +flag (turn on) | -flag (turn off) | burst
+const DEMO = {
+  salt: [
+    ['Efficiency mode: the coolant is allowed to warm toward 40 °C, so the room carries some of the heat and less salt is used.', 'reset mode=efficiency speed=1', 10],
+    ['Performance mode: it holds 25 °C for the coolest chips. Watch the dosing (blue) jump.', 'mode=performance', 10],
+    ['A heavy job is scheduled 90 s ahead. Performance mode pre-cools first, then dosing follows the server power draw (feedforward).', 'burst', 14],
+    ['Stealth mode: it holds the loop at room temperature (28 °C), so almost no heat leaks out. Watch "Heat released to room".', 'mode=stealth', 10],
+    ['One sensor starts lying (99 °C). The other two outvote it: WARNING, but the servers keep running.', '+sensor_fault', 8],
+    ['All sensors lost: with no trustworthy data it shuts the servers down safely.', '+sensors_lost', 8]],
+  pcm: [
+    ['Reusable PCM: sodium thiosulfate pentahydrate melts at 48.3 °C and pins the coolant just above it. One module works at a time.', 'reset mode=efficiency speed=1', 8],
+    ['A heavy sustained load (5.5 kW), shown at 5× speed. Each module melts in turn and is swapped out when spent.', '+spike speed=5', 12],
+    ['Once the modules are half spent, efficiency mode schedules a low-power state (load capped at 40%) so idle modules can re-solidify.', '', 12],
+    ['Load back to normal. Stealth mode: idle modules stay insulated, so they keep their heat instead of releasing it. Watch "Heat released to room" drop.', '-spike mode=stealth', 10],
+    ['A safe window opens: the fans come on and the modules dump their stored heat into the room.', '+window', 8]],
+  orbit: [
+    ['In orbit heat leaves only as radiation (Q = εσAT⁴). The radiators stay edge-on to the sun; efficiency mode floats near 28 °C.', 'reset mode=efficiency speed=1', 8],
+    ['Performance mode: radiators fully out, and the water drops toward 20 °C.', 'mode=performance', 10],
+    ['Servers go idle (5× speed). Without their waste heat the water would freeze, so the guard retracts the radiators, turns to the sun and runs a heater.', '+idle speed=5', 14],
+    ['Servers resume, and the radiators come back out.', '-idle speed=1', 8],
+    ['Close solar pass: sunlight ×3. Staying edge-on means the radiators absorb almost none of it.', '+solar_pass', 8],
+    ['ADCS fails, stuck facing the sun. The radiators now absorb more than they emit, so it hides them behind the MLI shield, then sheds load and shuts down safely.', '+adcs_fault', 16]]
+};
+async function doActions(text) {
+  for (const a of text.split(' ').filter(Boolean)) {
+    if (a === 'reset' || a === 'burst') await post('scenario/' + a);
+    else if (a.startsWith('mode=')) await post('setup', {mode: a.slice(5)});
+    else if (a.startsWith('speed=')) await post('setup', {speed: +a.slice(6)});
+    else { const on = a[0] === '+', f = a.slice(1); if (!!last.flags[f] !== on) await post('scenario/' + f); }
+  }
+}
+async function demo() {
+  if (demoOn) return; demoOn = true; showTab('dash'); $('#capcard').hidden = false; scrollTo(0, 0);
+  try {
+    for (const [caption, actions, secs] of DEMO[last.kind]) { $('#cap').textContent = caption; await doActions(actions); await sleep(secs * 1000); }
+    await post('setup', {speed: 1});
+    $('#cap').textContent = 'Demo finished. Press Reset, or try the scenario buttons yourself.'; await sleep(6000);
+  } finally { $('#capcard').hidden = true; demoOn = false; }
+}
+$('#go').onclick = demo;
+
+// ---------- live updates: Server-Sent Events, with polling as a fallback ----------
+function onSnapshot(s) {
+  const lastT = () => hist.length ? hist[hist.length - 1].t : -1;
+  if (s.t < lastT()) hist = [];                              // time went backwards: the simulation was reset
+  const fresh = (s.new || []).filter(p => p.t > lastT());    // skip points we already have
+  hist.push(...fresh); if (hist.length > 900) hist.splice(0, hist.length - 900);
+  render(s); draw();
+}
+(async () => {
+  const s = await api('state'); hist = s.history; render(s); draw();
+  const es = new EventSource('/api/stream');
+  es.onopen = () => { $('#dot').style.background = COL.NORMAL; clearInterval(polling); polling = null; };
+  es.onmessage = e => onSnapshot(JSON.parse(e.data));
+  es.onerror = () => {
+    $('#dot').style.background = COL.SHUTDOWN;
+    if (!polling) polling = setInterval(async () => { const s = await api('state'); hist = s.history; render(s); draw(); }, 1000);
+  };
+})();
+</script>
+</body></html>

@@ -1,6 +1,8 @@
-"""FastAPI backend: REST + Server-Sent Events + static dashboard.
-Run: python -m coolant.server   ->  http://localhost:8000
-Env: COOLANT_HAL="module:Class" for real hardware, COOLANT_TICK_S (1.0 on real hardware)."""
+"""FastAPI backend: REST + Server-Sent Events + the static dashboard.
+
+Run:  python -m coolant.server   ->  http://localhost:8000
+Env:  COOLANT_HAL="module:Class"  drive real hardware instead of the simulator (also set COOLANT_TICK_S=1)
+"""
 import asyncio
 import importlib
 import json
@@ -33,7 +35,7 @@ async def lifespan(_):
     engine.stop()
 
 
-app = FastAPI(title="Solute Cooling Controller", lifespan=lifespan)
+app = FastAPI(title="Autonomous Thermal Controller", lifespan=lifespan)
 
 
 @app.get("/api/state")
@@ -52,7 +54,16 @@ async def stream():
             yield f"data: {json.dumps(snap)}\n\n"
             await asyncio.sleep(0.25)
     return StreamingResponse(gen(), media_type="text/event-stream",
-                             headers={"Cache-Control": "no-cache"})
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.post("/api/setup")
+def setup(options: dict = Body(...)):
+    """Change environment, sink, mode and/or speed, e.g. {"env": "orbital", "mode": "stealth"}."""
+    try:
+        return engine.setup(**options)
+    except (ValueError, TypeError) as e:
+        raise HTTPException(422, str(e))
 
 
 @app.post("/api/scenario/{name}")
@@ -79,5 +90,12 @@ def set_config(patch: dict = Body(...)):
 app.mount("/", StaticFiles(directory=Path(__file__).resolve().parent.parent / "web", html=True))
 
 if __name__ == "__main__":
+    import sys
+    import threading
+    import webbrowser
+
     import uvicorn
-    uvicorn.run(app, host=os.getenv("HOST", "0.0.0.0"), port=int(os.getenv("PORT", "8000")))
+    port = int(os.getenv("PORT", "8000"))
+    if "--open" in sys.argv:            # start.bat: open the dashboard once the server is up
+        threading.Timer(2.0, webbrowser.open, [f"http://localhost:{port}"]).start()
+    uvicorn.run(app, host=os.getenv("HOST", "0.0.0.0"), port=port)
