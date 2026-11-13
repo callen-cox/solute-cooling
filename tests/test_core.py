@@ -1,8 +1,15 @@
+import random
+
 import pytest
 from fastapi.testclient import TestClient
 
-from coolant.core import MODES, Config, Controller, Engine, State, solubility
+from coolant.core import MODES, Config, Controller, Engine, State, sizing, solubility
 from coolant.server import app
+
+
+@pytest.fixture(autouse=True)
+def repeatable():
+    random.seed(1234)                   # sensor noise is random; seed it so every run is identical
 
 
 def run(e, n):
@@ -25,7 +32,8 @@ def logged(e, text):
 # ---------- safety configuration ----------
 def test_config_enforces_order_and_margins():
     Config().validate()
-    for bad in ({"t_shutdown": 80.0}, {"t_warn": 40.0}, {"sat_switch": 1.2}, {"t_freeze_warn": 50.0}):
+    for bad in ({"t_shutdown": 80.0}, {"t_warn": 40.0}, {"sat_switch": 1.2}, {"t_freeze_warn": 50.0},
+                {"chip_shutdown": 95.0}, {"chip_warn": 88.0}, {"drift_limit": 5.0}):
         with pytest.raises(ValueError):
             Config(**bad).validate()
 
@@ -52,12 +60,38 @@ def test_salt_swaps_tank_before_crystals_can_form():
     assert e.hal.tanks == 0 and logged(e, "reserve tank")
 
 
-def test_performance_mode_precools_before_a_scheduled_job():
+def test_mpc_precools_on_its_own_before_a_scheduled_job():
     e = Engine(mode="performance")
     run(e, 400)
-    e.scenario("burst")
+    before = e.last["true_T"]
+    e.scenario("burst")                 # 90 s notice; nothing in the setpoint changes
     run(e, 80)
-    assert e.last["setpoint"] == 21.0 and e.last["true_T"] < 24.5
+    assert e.last["setpoint"] == 25.0 and e.last["true_T"] < before - 1.5
+
+
+def test_controller_learns_the_room():
+    e = Engine()                        # design sheet says 25 kg of water and a 10 W/K leak; truth is 20 kg, 15 W/K
+    run(e, 1200)
+    e.scenario("spike")
+    run(e, 300)
+    e.scenario("spike")
+    run(e, 300)
+    m = e.last["model"]
+    assert abs(m["water_kg"] - 20) < 1 and abs(m["j_per_g"] - 277) < 10
+    assert abs(m["leak_w_per_k"] - 15) < abs(m["design_leak"] - 15)      # moved from the design guess toward the truth
+    for val, sd, truth in ((m["water_kg"], m["water_sd"], 20), (m["leak_w_per_k"], m["leak_sd"], 15),
+                           (m["j_per_g"], m["j_sd"], 277)):
+        assert abs(val - truth) <= 3 * sd + 0.5                         # and the truth is inside its stated uncertainty
+
+
+def test_sizing():
+    s = sizing(kw=2, hours=1, coolant_c=40, radiator_c=30)
+    rows = {r["option"]: r for r in s["rows"]}
+    assert s["kwh"] == 2 and rows["Salt: ammonium chloride"]["amount"] == 26.0
+    assert rows["PCM: sodium thiosulfate pentahydrate"]["amount"] == 36.0
+    assert 4.8 < rows["Orbital radiator"]["amount"] < 5.0 and 34 < s["hopper_minutes"] < 35
+    with pytest.raises(ValueError):
+        sizing(kw=-1)
 
 
 def test_pump_degradation_is_learned():
@@ -94,6 +128,69 @@ def test_sink_exhaustion_never_exceeds_t_safe(kw):
     e.scenario("spike")
     _, hi = extremes(e, 8000)
     assert hi < e.cfg.t_shutdown + 1
+
+
+def test_drifting_sensor_is_caught_before_it_can_fool_the_vote():
+    e = Engine()
+    run(e, 200)
+    e.scenario("sensor_drift")          # S2 creeps upward 0.015 °C per second
+    for _ in range(300):
+        e.step()
+        if any("drifting" in ev["msg"] for ev in e.events):
+            break
+    assert e.hal.drift < 2.0            # caught long before the 3 °C vote would notice
+    run(e, 30)
+    assert e.last["state"] == "WARNING" and abs(e.last["T"] - e.last["true_T"]) < 0.15
+
+
+def test_chip_limits_trip_even_when_the_coolant_is_fine():
+    e = Engine(mode="performance")
+    run(e, 300)
+    e.scenario("spike")
+    e.scenario("cold_plate")
+    run(e, 30)
+    assert e.last["state"] == "THROTTLE" and "chips" in e.last["reason"] and e.last["true_T"] < 30
+
+
+@pytest.mark.parametrize("sink", ["salt", "pcm"])
+@pytest.mark.parametrize("mode", MODES)
+def test_clogged_cold_plate_is_caught_early_without_power_cycling(sink, mode):
+    e = Engine(sink=sink, mode=mode)
+    run(e, 600)
+    e.scenario("spike")
+    e.scenario("cold_plate")
+    states, hottest = [], 0.0
+    for _ in range(600):
+        e.step()
+        hottest = max(hottest, e.hal.chip)
+        if not states or states[-1] != e.last["state"]:
+            states.append(e.last["state"])
+    assert states == ["NORMAL", "WARNING", "THROTTLE"] and hottest < e.cfg.chip_throttle
+    assert e.last["reason"] == "chips would overheat at full load: holding the throttle"
+    e.scenario("clear")
+    run(e, 600)
+    assert "chip" not in e.last["reason"] and e.last["state"] != "SHUTDOWN"
+
+
+def test_a_projected_chip_temperature_sheds_load_before_it_can_shut_down():
+    ctl = Controller(Config())
+    hot_soon = dict(T=40.0, hot=40.0, health=0, low=False, out=False, chip=95.0, chip_now=75.0)
+    ctl.state = State.WARNING
+    assert ctl.supervise(**hot_soon) == (State.THROTTLE, "chips heating fast: shedding load early")
+    ctl.state = State.THROTTLE                                                  # load already shed, still heading over
+    assert ctl.supervise(**hot_soon)[0] == State.SHUTDOWN
+    ctl.state = State.NORMAL                                                    # a real reading over the limit
+    assert ctl.supervise(**{**hot_soon, "chip_now": 91.0})[0] == State.SHUTDOWN
+
+
+def test_restart_after_a_shutdown_is_gentle():
+    ctl = Controller(Config())
+    cool = dict(T=40.0, hot=40.0, health=0, low=False, out=False, chip=60.0)
+    ctl.state, ctl.clock, ctl.shutdown_until = State.SHUTDOWN, 100.0, 150.0
+    assert ctl.supervise(**cool)[0] == State.SHUTDOWN                           # off for at least 2 minutes
+    ctl.clock = 200.0
+    assert ctl.supervise(**{**cool, "chip": 85.0})[0] == State.SHUTDOWN         # and until the chips have cooled
+    assert ctl.supervise(**cool) == (State.THROTTLE, "restarting at reduced load")
 
 
 def test_one_bad_sensor_is_outvoted_not_fatal():
@@ -182,6 +279,21 @@ def test_mode_switch_keeps_the_simulation_running():
     assert e.t == t and e.ctl.mode == "performance" and logged(e, "mode switched")
 
 
+@pytest.mark.parametrize("kw", [{}, {"env": "orbital"}])
+def test_clear_all_turns_every_scenario_off_without_resetting(kw):
+    e = Engine(**kw)
+    run(e, 100)
+    for name, _ in e.hal.scenarios():
+        if name in e.hal.flags:
+            e.scenario(name)
+    if hasattr(e.hal, "schedule_burst"):
+        e.scenario("burst")
+    t = e.t
+    e.scenario("clear")
+    assert not any(e.hal.flags.values()) and e.t == t and len(e.hist) > 50
+    assert getattr(e.hal, "burst_in", 0) == 0 and getattr(e.hal, "burst_left", 0) == 0
+
+
 def test_api_roundtrip():
     with TestClient(app) as c:
         s = c.get("/api/state").json()
@@ -196,3 +308,8 @@ def test_api_roundtrip():
         assert c.post("/api/setup", json={"mode": "stealth", "speed": 5}).json()["options"]["speed"] == 5
         assert c.post("/api/setup", json={"env": "terrestrial", "sink": "pcm"}).json()["kind"] == "pcm"
         assert c.post("/api/scenario/spike").json()["flags"]["spike"] is True
+        assert c.post("/api/size", json={"kw": 2, "hours": 1}).json()["rows"][0]["amount"] == 26.0
+        assert c.post("/api/size", json={"kw": -5}).status_code == 422
+        page = c.get("/").text              # the dashboard, with its quality-of-life controls
+        for el in ('id="theme"', 'id="welcome"', 'id="totop"', 'id="share"'):
+            assert el in page

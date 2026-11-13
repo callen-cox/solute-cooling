@@ -14,7 +14,7 @@ from fastapi import Body, FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from .core import Engine
+from .core import Engine, sizing
 
 
 def make_engine():
@@ -62,6 +62,15 @@ def setup(options: dict = Body(...)):
     """Change environment, sink, mode and/or speed, e.g. {"env": "orbital", "mode": "stealth"}."""
     try:
         return engine.setup(**options)
+    except (ValueError, TypeError) as e:
+        raise HTTPException(422, str(e))
+
+
+@app.post("/api/size")
+def size(options: dict = Body(...)):
+    """Sizing calculator, e.g. {"kw": 2, "hours": 1, "coolant_c": 40, "radiator_c": 30}."""
+    try:
+        return sizing(**options)
     except (ValueError, TypeError) as e:
         raise HTTPException(422, str(e))
 
