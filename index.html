@@ -1,6 +1,504 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Autonomous Thermal Controller</title>
-<meta http-equiv="refresh" content="0; url=web/">
-<style>body{margin:0;background:#0d1117;color:#e6edf3;font:16px system-ui,sans-serif;display:grid;place-items:center;height:100vh}a{color:#58a6ff}</style>
-</head><body><p>Opening the dashboard… <a href="web/">click here if nothing happens</a>.</p></body></html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Relay Thermal Watchdog</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧊</text></svg>">
+<script>/* pick the theme before anything paints, so light-mode visitors don't see a dark flash */
+(() => { let t = null; try { t = localStorage.getItem('thermal.theme'); } catch (e) {}
+  document.documentElement.dataset.theme = t || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'); })();</script>
+<style>
+:root{--bg:#0d1117;--card:#161b22;--line:#30363d;--tx:#e6edf3;--mut:#8b949e;--acc:#58a6ff;--btn:#1f6feb;--badge-tx:#000;
+ --ok:#3fb950;--warn:#d29922;--cut:#f0883e;--off:#f85149;--shadow:rgba(0,0,0,.5);color-scheme:dark}
+:root[data-theme="light"]{--bg:#f6f8fa;--card:#ffffff;--line:#d0d7de;--tx:#1f2328;--mut:#57606a;--acc:#0969da;--btn:#0969da;--badge-tx:#fff;
+ --ok:#1a7f37;--warn:#9a6700;--cut:#bc4c00;--off:#cf222e;--shadow:rgba(31,35,40,.18);color-scheme:light}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+header{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+h1{font-size:17px;margin:0;flex:1;min-width:180px}h1:focus{outline:none}h3{margin:0 0 6px;font-size:16px}
+.badge{padding:4px 12px;border-radius:99px;font-weight:700;font-size:13px;color:var(--badge-tx);background:var(--ok)}
+.welcome{border-color:var(--acc);position:relative}.welcome p{margin:10px 0 0;display:flex;gap:8px;flex-wrap:wrap}
+.welcome h3{padding-right:40px}
+.x{position:absolute;top:8px;right:8px;padding:2px 10px}
+.primary{background:var(--btn);color:#fff;border-color:var(--btn);font-weight:600}
+button:disabled{opacity:.6;cursor:progress}
+@media (max-width:600px){#where{display:none}.hide-sm{display:none}}
+#dot{width:9px;height:9px;border-radius:50%;background:var(--off);flex:none}#dot.live{background:var(--ok)}
+.totop{position:fixed;right:16px;bottom:calc(16px + env(safe-area-inset-bottom, 0px));z-index:8;width:44px;height:44px;padding:0;
+ border-radius:50%;font-size:20px;line-height:1;box-shadow:0 4px 14px var(--shadow);
+ opacity:0;visibility:hidden;transform:translateY(10px);transition:opacity .2s,transform .2s,visibility .2s}
+.totop.show{opacity:1;visibility:visible;transform:none}
+@media (prefers-reduced-motion:reduce){.totop{transition:none}}
+nav{display:flex;gap:8px;padding:10px 16px;flex-wrap:wrap;align-items:end}
+nav label{display:flex;flex-direction:column;font-size:11px;color:var(--mut);gap:2px}
+button,select{background:var(--card);color:var(--tx);border:1px solid var(--line);border-radius:8px;padding:8px 12px;font:inherit;cursor:pointer}
+select:disabled{opacity:.4}
+button.on{border-color:var(--acc);color:var(--acc)}
+button:hover,select:hover{border-color:var(--mut)}
+.tabs{display:flex;gap:6px;margin-right:auto}
+.layout{display:grid;grid-template-columns:minmax(0,1040px);justify-content:center}
+main{padding:0 16px 84px;min-width:0}
+/* alerts: everything wrong right now, under a flashing red warning sign.
+   Wide screens: a sticky column on the right. Narrower: a floating button, bottom-left. */
+.alerts{display:flex;flex-direction:column;gap:10px}
+.alertbtn{display:flex;align-items:center;gap:12px;width:100%;text-align:left;border-radius:12px;padding:12px 14px}
+.alertbtn b{display:block;font-size:15px;text-transform:uppercase;letter-spacing:.04em}
+.alertbtn small{display:block;color:var(--mut);font-size:12px}
+.alerts.on .alertbtn{border:2px solid var(--off)}
+.alerts.on .alertbtn b{color:var(--off)}
+.alerts.clear .alertbtn{cursor:default}.alerts.clear .alertbtn b{color:var(--ok)}
+.sign{width:46px;height:46px;flex:none}
+.warnsign{color:var(--off)}.oksign{color:var(--ok)}
+.alerts.clear .warnsign,.alerts.on .oksign{display:none}
+.alerts.on .warnsign{animation:flash 1.2s infinite}
+@keyframes flash{0%,55%{opacity:1}56%,100%{opacity:.15}}
+.alertlist{display:grid;gap:8px}.alertlist[hidden]{display:none}
+.alert{background:var(--card);border:1px solid var(--line);border-left:5px solid var(--warn);border-radius:8px;padding:8px 10px;font-size:13px}
+.alert.critical{border-left-color:var(--off)}
+.alert i{display:block;font-style:normal;font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--warn)}
+.alert.critical i{color:var(--off)}
+.alert b{display:block;font-size:14px}.alert span{display:block;color:var(--mut)}
+@media (min-width:1200px){
+ .layout{grid-template-columns:minmax(0,1040px) 280px;padding-right:16px}
+ .alerts{position:sticky;top:16px;align-self:start;max-height:calc(100vh - 32px);overflow:auto}
+}
+@media (max-width:1199px){
+ .alerts{position:fixed;left:16px;bottom:calc(16px + env(safe-area-inset-bottom, 0px));z-index:8;
+  flex-direction:column-reverse;align-items:flex-start;max-width:calc(100vw - 32px)}
+ .alerts.clear{display:none}
+ .alertbtn{width:auto;max-width:calc(100vw - 92px);padding:8px 16px 8px 10px;border-radius:99px;box-shadow:0 4px 14px var(--shadow)}
+ .alertbtn small{display:none}.sign{width:28px;height:28px}
+ .alertlist{width:min(360px,calc(100vw - 32px));max-height:55vh;overflow:auto;background:var(--card);
+  border:1px solid var(--line);border-radius:12px;padding:10px;box-shadow:0 8px 24px var(--shadow)}
+}
+@media (prefers-reduced-motion:reduce){.alerts.on .warnsign{animation:none}}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:12px}.grid .card{margin:0}
+.big{font-size:44px;font-weight:700;line-height:1.1}.mid{font-size:24px;font-weight:700}.mut{color:var(--mut);font-size:13px}
+.bar{height:8px;background:var(--line);border-radius:4px;overflow:hidden;margin:6px 0 4px}.bar i{display:block;height:100%;background:var(--acc)}
+canvas{width:100%;height:250px;display:block;margin-top:8px}
+.legend{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:var(--mut)}
+.legend b{display:inline-block;width:14px;height:3px;vertical-align:middle;margin-right:5px}
+.row{display:flex;gap:8px;flex-wrap:wrap}
+#log div{font:12px ui-monospace,Consolas,monospace;padding:4px 0;border-bottom:1px solid var(--line)}
+#capcard{border-color:var(--acc)}#cap{color:var(--acc);min-height:3em;font-size:16px}
+.ladder{display:flex;height:28px;position:relative;font-size:11px;color:#000;margin:10px 0;border-radius:6px;overflow:hidden}
+.ladder span{display:flex;align-items:center;justify-content:center;overflow:hidden;white-space:nowrap}
+.ladder i{position:absolute;top:0;bottom:0;width:3px;background:#fff;box-shadow:0 0 0 1px #000}
+.stack{display:grid;gap:6px}.layer{border-left:4px solid var(--c);background:var(--bg);padding:8px 12px;border-radius:6px}
+ol,ul{padding-left:20px;margin:6px 0}li{margin:3px 0}
+code{background:var(--bg);padding:1px 5px;border-radius:4px;font-size:13px}
+table{border-collapse:collapse;width:100%;font-size:14px}td,th{border-bottom:1px solid var(--line);padding:6px;text-align:left;vertical-align:top}
+.temps{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;flex-wrap:wrap}
+.big2{font-size:32px;font-weight:700;line-height:1.1}
+#brain{color:var(--acc);font-size:13px}
+#qr{position:fixed;inset:0;background:rgba(0,0,0,.85);display:grid;place-items:center;z-index:9;padding:16px}
+#qr[hidden]{display:none}
+.qrbox{background:#fff;color:#111;border-radius:16px;padding:20px;text-align:center;width:min(460px,100%)}
+.qrbox img{width:100%;max-width:380px;image-rendering:pixelated}
+.qrbox h3{font-size:22px;margin:8px 0 2px}.qrbox button{background:#111;color:#fff}
+.form{display:flex;gap:12px;flex-wrap:wrap;margin-top:10px}
+.form label{display:flex;flex-direction:column;font-size:12px;color:var(--mut);gap:4px}
+input{background:var(--bg);color:var(--tx);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:inherit;width:170px}
+</style></head><body>
+<header><h1 tabindex="-1">🛰️ Relay Thermal Watchdog</h1><button id="share" title="QR code for the live demo">📱<span class="hide-sm"> Share</span></button>
+ <button id="theme" title="Switch between light and dark mode">☀️<span class="hide-sm"> Light</span></button><span id="badge" class="badge">…</span><span id="where" class="mut"></span><span id="dot" title="live connection"></span></header>
+<nav>
+ <div class="tabs"><button class="on" data-tab="dash">Dashboard</button><button data-tab="how">How it works</button><button data-tab="size">Sizing</button></div>
+ <label>Mode<select id="mode"><option value="efficiency">Efficiency</option><option value="performance">Performance</option><option value="stealth">Stealth</option></select></label>
+ <label>Speed<select id="speed"><option value="1">1×</option><option value="5">5×</option><option value="20">20×</option></select></label>
+</nav>
+<div id="qr" hidden><div class="qrbox"><img src="qr.png" alt="QR code for the live demo"><h3>Scan to try it live</h3>
+ <div>callen-cox.github.io/solute-cooling</div><p><button id="qrclose">Close</button></p></div></div>
+<div class="layout">
+<main>
+<section id="dash">
+ <div class="card welcome" id="welcome" hidden><button class="x" id="welcomex" title="Dismiss">✕</button>
+  <h3>👋 New here?</h3>
+  <div>This is the autonomous thermal watchdog for a communication relay in orbit around the sun, linking habitat ships. It keeps the servers cool with radiators, then wax that melts, then a safe shutdown. It's running live in your browser, so go ahead and break things with the scenario buttons.</div>
+  <p><button id="welcomego" class="primary">▶ Watch the 1-minute guided demo</button><button id="welcomehow">How it works</button></p></div>
+ <div class="card" id="capcard" hidden><b>▶ Guided demo</b><div id="cap"></div></div>
+ <div class="card">
+  <div class="temps"><div><div class="mut">Coolant temperature</div><div class="big" id="T">–</div></div>
+   <div style="text-align:right"><div class="mut">Hottest chip</div><div class="big2" id="chip">–</div></div></div>
+  <div class="mut" id="sub"></div><div id="brain"></div>
+  <canvas id="chart"></canvas>
+  <div class="legend"><span><b style="background:var(--tx)"></b>coolant °C</span><span><b style="background:#58a6ff"></b>PCM wax melted</span><span>dashed = setpoint and safety limits</span></div>
+ </div>
+ <div class="grid" id="tiles"></div>
+ <div class="card"><div class="mut">Try a scenario (click again to turn off)</div><div class="row" id="scn"></div></div>
+ <div class="card"><div class="mut">Event log (newest first)</div><div id="log"></div></div>
+</section>
+
+<section id="how" hidden>
+ <div class="card"><h3>The problem: escape to space</h3>
+  Habitat ships need fast, reliable links, so communication relays orbit the sun between them. Each relay's servers make heat, and in space there is no air or water to carry it away:
+  heat can only leave as infrared light from a radiator (Q = εσAT⁴). Radiators sized for the worst case are big and heavy, and at low load the water inside them can freeze.
+  This watchdog runs the cooling autonomously, safely and with as little hardware as possible.</div>
+
+ <div class="card"><h3>Three tiers, with a watchdog above them</h3><div class="stack">
+  <div class="layer" style="--c:var(--acc)"><b>Tier 1 · Radiators</b> A pumped water loop carries server heat to radiator panels that face away from the sun, coordinated with the flight computer that points the solar arrays at it.</div>
+  <div class="layer" style="--c:var(--warn)"><b>Tier 2 · Wax PCM</b> When the radiators alone can't keep up, a valve routes the loop through n-eicosane wax, which absorbs 247 kJ/kg as it melts at 36.6 °C. Spare radiator capacity re-freezes it later, ready for the next surge.</div>
+  <div class="layer" style="--c:var(--off)"><b>Tier 3 · Go down safely</b> If that still isn't enough, the watchdog sheds load to 50%, then shuts the servers down, with the radiators stowed behind their shield if the sun is on them, until it cools.</div>
+  <div class="layer" style="--c:#79c0ff"><b>Freeze guard</b> At low load it stows the radiators and warms the loop with the cheapest heat first: the wax's stored heat, then a pass past the sun-facing side, and only then an electric heater.</div></div></div>
+
+ <div class="card"><h3>Safety ladders (live)</h3>
+  <div class="mut">Coolant</div><div class="ladder" id="ladder"></div>
+  <div class="mut">Hottest chip</div><div class="ladder" id="ladder2"></div>
+  <div class="mut">White markers = current temperatures. The watchdog watches both. <b>Warn</b>: alert and maximum cooling. <b>Cut</b>: IT load halved, held at least 5 min.
+  <b>Off</b>: clean shutdown, latched until the coolant is back under 46 °C. Coolant: warn 52, cut 56, off 60 °C (T<sub>safe</sub>), loop hardware limit 85 °C.
+  Chips: warn 80, cut 85, off 90 °C, damage 100 °C. The config refuses any setting with under 10 °C of margin. The freeze guard protects the bottom of the range.</div></div>
+
+ <div class="card"><h3>Every step (every 5 s of relay time)</h3><ol>
+  <li><b>Sense</b>: three sensors are median-voted, so a broken one is outvoted. Each is also compared with the others over about 30 seconds, so one that slowly drifts is dropped before it can fool the vote. With no usable data it assumes the worst and shuts down.</li>
+  <li><b>Forecast</b>: an energy balance (server heat + absorbed sunlight = radiated heat) gives the temperature the water would settle at with the radiators fully out. Above the wax's melting point, the radiators can't keep up on their own. The trend is also projected 5 minutes ahead.</li>
+  <li><b>Supervise</b>: the ladders above, for the coolant and the hottest chip. Everything wrong right now is listed in the alerts panel, under a flashing red warning sign, most serious first.</li>
+  <li><b>Act</b>: the mode sets the radiators, the wax valve and the freeze guard (below).</li></ol></div>
+
+ <div class="card"><h3>The watchdog: what makes it safe</h3><ul>
+  <li><b>A forecast alone never shuts the relay down.</b> Forecasts shed load early. A shutdown needs a real reading over the limit, or a forecast that still says too hot after load was shed.</li>
+  <li><b>It watches the chips</b>, not just the water. A clogged cold plate can cook a chip while the coolant looks fine, so it projects the chips' trend, sheds load before they reach their limit, and won't go back to full power while that would overheat them.</li>
+  <li><b>It catches bad sensors</b>, both sudden failures (outvoted) and slow drift (dropped before it matters).</li>
+  <li><b>It doesn't flap.</b> Load stays shed for at least 5 minutes, and until full power would fit again. After a shutdown it stays off at least 2 minutes and restarts at half load.</li>
+  <li><b>It fails safe.</b> With no trustworthy reading it shuts the servers down and stows the radiators, and a survival heater with its own hardware thermostat keeps the water liquid. If the control software itself crashes, a software watchdog cuts server power.</li></ul></div>
+
+ <div class="card"><h3>The physics, honestly</h3><ul>
+  <li><b>In orbit, hot water doesn't rise.</b> Convection needs gravity, so the loop has a small pump. A loop heat pipe, which moves its fluid with a wick, would do it with no pump at all.</li>
+  <li><b>Radiators shed heat in proportion to their area</b>, so they are thin panels, not tanks. Sizing them for the average load and letting the wax absorb the peaks is what saves material: see the Sizing tab.</li>
+  <li><b>Water expands about 9% when it freezes</b> and can split pipes, which is why the freeze guard matters.</li>
+  <li><b>Orbiting the sun, there is no planet shadow</b>, so the sunlight is constant. A close pass (3× the sunlight) is the relay swinging nearer the sun.</li></ul></div>
+
+ <div class="card"><h3>Modes</h3><table>
+  <tr><th>Mode</th><th>Goal</th><th>What it does</th></tr>
+  <tr><td><b>Efficiency</b></td><td>Save power and wear</td><td>Floats the water near 28 °C and re-freezes the wax as fast as spare radiator capacity allows</td></tr>
+  <tr><td><b>Performance</b></td><td>Coolest chips</td><td>Radiators out, holds about 20 °C, and re-freezes the wax without warming up</td></tr>
+  <tr><td><b>Stealth</b></td><td>Minimal thermal signature</td><td>Keeps the radiators stowed and stores heat in the wax, then radiates it in a safe window</td></tr></table></div>
+
+ <div class="card"><h3>Where it runs</h3><ul>
+  <li><b>On a laptop:</b> <code>start.bat</code> runs the Python control loop as a FastAPI server, and this page streams from it.</li>
+  <li><b>Online:</b> with no server, this page loads Python into your browser (Pyodide, WebAssembly) and runs the exact same <code>coolant/core.py</code>.</li>
+  <li><b>On real hardware:</b> swap the simulator for a <code>HAL</code> class that reads real sensors and drives the real valves, radiator deployment, heater and server power caps, alongside the flight computer.</li></ul></div>
+
+ <div class="card"><h3>Guided demo</h3><div class="mut">Plays about a minute of scenarios with captions: all three tiers, the chips, the freeze guard and a failure.</div>
+  <p><button id="go">▶ Run guided demo</button></p></div>
+</section>
+
+<section id="size" hidden>
+ <div class="card"><h3>Radiator + PCM sizing</h3>
+  <div class="mut">Compare a radiator big enough for the worst surge with a smaller radiator for the average load plus wax that absorbs the surges.</div>
+  <div class="form">
+   <label>Normal load (kW)<input id="kw" type="number" value="0.5" min="0.01" step="0.1"></label>
+   <label>Surge load (kW)<input id="surge" type="number" value="1.5" min="0.01" step="0.1"></label>
+   <label>Surge length (min)<input id="smin" type="number" value="30" min="1" step="5"></label>
+   <label>Time between surges (h)<input id="gap" type="number" value="6" min="0.5" step="0.5"></label>
+   <label>Radiator temperature (°C)<input id="radc" type="number" value="30" step="5"></label>
+   <label>Panel mass (kg/m²)<input id="kgm2" type="number" value="5" min="0.5" max="50" step="0.5"></label>
+  </div></div>
+ <div class="card" id="sizeout"><div class="mut">Enter a load to see the numbers.</div></div>
+</section>
+</main>
+<aside id="alerts" class="alerts clear" aria-label="Active alerts">
+ <button id="alertbtn" class="alertbtn" aria-expanded="false" aria-controls="alertlist">
+  <svg class="sign warnsign" viewBox="0 0 48 48" aria-hidden="true"><path d="M24 5 L45 42 H3 Z" fill="currentColor"
+   stroke="currentColor" stroke-width="5" stroke-linejoin="round"/><rect x="21.5" y="16" width="5" height="15" rx="2.5" fill="#fff"/>
+   <circle cx="24" cy="36.5" r="3" fill="#fff"/></svg>
+  <svg class="sign oksign" viewBox="0 0 48 48" aria-hidden="true"><circle cx="24" cy="24" r="21" fill="currentColor"/>
+   <path d="M14 25 l7 7 l13 -15" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  <span><b id="alertcount" aria-live="polite">All clear</b><small id="alerthint">no faults detected</small></span>
+ </button>
+ <div id="alertlist" class="alertlist" hidden></div>
+</aside>
+</div>
+<button id="totop" class="totop" title="Back to top" aria-label="Back to top">↑</button>
+
+<script>
+const $ = s => document.querySelector(s), sleep = ms => new Promise(r => setTimeout(r, ms));
+// Status colours per theme: bright on dark, deeper on light so text stays readable. Ladders always use the bright set.
+const PALETTE = {dark:  {NORMAL:'#3fb950', WARNING:'#d29922', THROTTLE:'#f0883e', SHUTDOWN:'#f85149', line:'#e6edf3', grid:'#8b949e',
+                         pcm:'#39c5cf', guard:'#79c0ff', freeze:'#1f6feb'},
+                 light: {NORMAL:'#1a7f37', WARNING:'#9a6700', THROTTLE:'#bc4c00', SHUTDOWN:'#cf222e', line:'#1f2328', grid:'#57606a',
+                         pcm:'#1b7c83', guard:'#218bff', freeze:'#0550ae'}};
+const BRIGHT = PALETTE.dark;
+let theme = 'dark', COL = PALETTE.dark;
+let hist = [], last = null, demoOn = false, scnKey = '', polling = null, local = null;
+
+// ---------- talking to the backend: the Python server, or the same Python running in this browser ----------
+const api = async (path, method = 'GET', body) => local ? local(path, body) :
+  (await fetch('/api/' + path, {method, headers:{'Content-Type':'application/json'}, body: body && JSON.stringify(body)})).json();
+async function post(path, body) {           // every POST returns a full snapshot with history
+  const s = await api(path, 'POST', body);
+  if (s.history) { hist = s.history; render(s); draw(); }
+  return s;
+}
+
+// ---------- tabs and selectors ----------
+function showTab(name) {
+  document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === name));
+  for (const id of ['dash', 'how', 'size']) $('#' + id).hidden = name !== id;
+  if (name === 'size') size();
+  draw();
+}
+document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => showTab(b.dataset.tab));
+$('#share').onclick = () => { $('#qr').hidden = false; };
+
+// ---------- light / dark mode: follows the device until you pick one, then remembers your pick ----------
+function setTheme(t, save) {
+  theme = t; COL = PALETTE[t]; document.documentElement.dataset.theme = t;
+  const b = $('#theme');
+  b.innerHTML = t === 'dark' ? '☀️<span class="hide-sm"> Light</span>' : '🌙<span class="hide-sm"> Dark</span>';
+  b.title = t === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'; b.setAttribute('aria-label', b.title);
+  if (save) try { localStorage.setItem('thermal.theme', t); } catch (e) {}
+  if (last) { render(last); draw(); }
+}
+$('#theme').onclick = () => setTheme(theme === 'dark' ? 'light' : 'dark', true);
+setTheme(document.documentElement.dataset.theme === 'light' ? 'light' : 'dark', false);   // chosen in <head>
+
+// ---------- back-to-top button: fades in once you've scrolled down ----------
+const toTop = $('#totop');
+let topQueued = false;
+const topCheck = () => { topQueued = false; toTop.classList.toggle('show', scrollY > 400); };
+addEventListener('scroll', () => { if (!topQueued) { topQueued = true; requestAnimationFrame(topCheck); } }, {passive: true});
+toTop.onclick = () => {
+  scrollTo({top: 0, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'});
+  $('h1').focus({preventScroll: true});         // keyboard and screen-reader users land at the top too
+};
+topCheck();
+
+// ---------- alerts: everything wrong right now, under a flashing red warning sign ----------
+// The list comes from the controller (s.alerts), plus one the dashboard adds itself if it loses the live feed.
+const esc = t => String(t).replace(/[&<>"]/g, ch => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[ch]));
+const wide = matchMedia('(min-width: 1200px)');
+let alertKey = '', alertOpen = null, connLost = false;          // alertOpen null = default: open on wide screens
+const alertsOpen = () => alertOpen === null ? wide.matches : alertOpen;
+function renderAlerts(s) {
+  const list = (s.alerts || []).slice();
+  if (connLost) list.unshift({level: 'critical', title: 'Live connection lost', detail: 'retrying: the numbers may be out of date'});
+  const faults = Object.values(s.flags || {}).some(Boolean), open = alertsOpen(), n = list.length;
+  const key = JSON.stringify([list, faults, open]);
+  if (key === alertKey) return;                                  // only touch the page when something changed
+  alertKey = key;
+  const box = $('#alerts');
+  box.classList.toggle('on', n > 0); box.classList.toggle('clear', n === 0);
+  $('#alertcount').textContent = n ? `${n} active alert${n > 1 ? 's' : ''}` : 'All clear';
+  $('#alerthint').textContent = n ? (open ? 'click to hide the list' : 'click to see them') : 'no faults detected';
+  $('#alertbtn').setAttribute('aria-expanded', String(n > 0 && open));
+  $('#alertlist').hidden = !(n > 0 && open);
+  $('#alertlist').innerHTML = list.map(a => `<div class="alert ${a.level}"><i>${esc(a.level)}</i><b>${esc(a.title)}</b>` +
+      (a.detail ? `<span>${esc(a.detail)}</span>` : '') + '</div>').join('') +
+    (faults ? '<button data-clear>✖ Clear all</button>' : '');
+}
+$('#alertbtn').onclick = () => {
+  if (!$('#alerts').classList.contains('on')) return;
+  alertOpen = !alertsOpen(); if (last) renderAlerts(last);
+};
+$('#alertlist').onclick = e => { if (e.target.closest('[data-clear]')) post('scenario/clear'); };
+wide.addEventListener('change', () => { alertOpen = null; if (last) renderAlerts(last); });
+function setConn(ok) { connLost = !ok; $('#dot').classList.toggle('live', ok); if (last) renderAlerts(last); }
+
+// ---------- "New here?" banner: live link only, once per device ----------
+// The browser itself remembers that it has seen the banner (localStorage). Nothing is sent anywhere and no one is tracked.
+function welcome() {
+  let seen = false;
+  try { seen = localStorage.getItem('thermal.welcome') !== null; localStorage.setItem('thermal.welcome', 'seen'); } catch (e) {}
+  $('#welcome').hidden = seen;
+}
+$('#welcomex').onclick = () => { $('#welcome').hidden = true; };
+$('#welcomego').onclick = () => { $('#welcome').hidden = true; demo(); };
+$('#welcomehow').onclick = () => showTab('how');
+$('#qr').onclick = e => { if (e.target.id === 'qr' || e.target.id === 'qrclose') $('#qr').hidden = true; };
+['mode', 'speed'].forEach(k => $('#' + k).onchange = () =>
+  post('setup', {[k]: k === 'speed' ? +$('#speed').value : $('#' + k).value}));
+$('#scn').onclick = e => { const k = e.target.dataset.k; if (k) post('scenario/' + k); };
+
+// ---------- rendering ----------
+function render(s) {
+  last = s;
+  const b = $('#badge'); b.textContent = s.state; b.style.background = COL[s.state];
+  for (const k of ['mode', 'speed'])
+    if (document.activeElement !== $('#' + k)) $('#' + k).value = s.options[k];
+  $('#T').textContent = s.true_T.toFixed(1) + ' °C'; $('#T').style.color = COL[s.state];
+  const c = s.config, chipCol = s.chip == null ? COL.grid : s.chip >= c.chip_shutdown ? COL.SHUTDOWN
+    : s.chip >= c.chip_throttle ? COL.THROTTLE : s.chip >= c.chip_warn ? COL.WARNING : COL.NORMAL;
+  $('#chip').textContent = s.chip == null ? '–' : s.chip.toFixed(1) + ' °C'; $('#chip').style.color = chipCol;
+  $('#brain').textContent = s.brain ? '🧠 ' + s.brain : '';
+  $('#sub').textContent = (s.health === 2 ? 'controller has no trustworthy reading, assuming the worst'
+      : `controller sees ${s.T.toFixed(1)}° · predicts ${s.T_pred.toFixed(1)}°`) + ` · setpoint ${s.setpoint}° · ${s.reason}`;
+  $('#tiles').innerHTML = s.tiles.map(t => `<div class="card"><div class="mut">${t.label}</div><div class="mid">${t.value}</div>` +
+      (t.pct == null ? '' : `<div class="bar"><i style="width:${Math.max(0, Math.min(100, t.pct))}%"></i></div>`) +
+      `<div class="mut">${t.sub}</div></div>`).join('');
+  const key = JSON.stringify(s.scenarios);
+  if (key !== scnKey) { scnKey = key; $('#scn').innerHTML = s.scenarios.map(([k, l]) => `<button data-k="${k}">${l}</button>`).join(''); }
+  document.querySelectorAll('#scn [data-k]').forEach(x => x.classList.toggle('on', !!s.flags[x.dataset.k]));
+  $('#log').innerHTML = s.events.slice().reverse().map(e => `<div>t+${Math.round(e.t)} s · ${e.msg}</div>`).join('');
+  ladder(s);
+  renderAlerts(s);
+}
+
+function drawLadder(el, seg, hi, v) {        // seg = [from, to, colour, label] ... over 0..hi
+  const p = x => x / hi * 100;
+  el.innerHTML = seg.map(([a, b, col, l]) => `<span style="width:${p(b) - p(a)}%;background:${col}">${p(b) - p(a) > 3.5 ? l : ''}</span>`).join('') +
+    (v == null ? '' : `<i style="left:${Math.min(99.5, Math.max(0, p(v)))}%"></i>`);
+}
+function ladder(s) {
+  const c = s.config, B = BRIGHT;
+  drawLadder($('#ladder'), [[0, c.t_freeze, '#1f6feb', 'Freeze'], [c.t_freeze, c.t_freeze_warn, '#79c0ff', 'Guard'], [c.t_freeze_warn, c.t_warn, B.NORMAL, 'OK']]
+    .concat([[c.t_warn, c.t_throttle, B.WARNING, 'Warn'], [c.t_throttle, c.t_shutdown, B.THROTTLE, 'Cut'],
+             [c.t_shutdown, c.t_damage, B.SHUTDOWN, 'Off'], [c.t_damage, c.t_damage + 3, '#8b1d1d', '']]), c.t_damage + 3, s.true_T);
+  drawLadder($('#ladder2'), [[0, c.chip_warn, B.NORMAL, 'OK'], [c.chip_warn, c.chip_throttle, B.WARNING, 'Warn'],
+    [c.chip_throttle, c.chip_shutdown, B.THROTTLE, 'Cut'], [c.chip_shutdown, c.chip_damage, B.SHUTDOWN, 'Off'],
+    [c.chip_damage, c.chip_damage + 3, '#8b1d1d', '']], c.chip_damage + 3, s.chip);
+}
+
+// ---------- radiator + PCM sizing ----------
+const SIZE_IN = {kw: 'normal_kw', surge: 'surge_kw', smin: 'surge_min', gap: 'between_h', radc: 'radiator_c', kgm2: 'panel_kg_m2'};
+let sizeTimer = null;
+async function size() {
+  const body = {};
+  for (const [id, key] of Object.entries(SIZE_IN)) body[key] = +$('#' + id).value;
+  let r = {};
+  try { r = await api('size', 'POST', body); } catch (e) {}
+  if (!r || !r.rows) {
+    $('#sizeout').innerHTML = `<div class="mut">${esc((r && typeof r.detail === 'string' && r.detail) ||
+      'Check the numbers: a normal load above 0 kW and no bigger than the surge, and positive times.')}</div>`;
+    return;
+  }
+  const kg = r.mass_saved_kg;
+  $('#sizeout').innerHTML = `<table><tr><th>Option</th><th>Radiator area</th><th>Mass</th><th>Notes</th></tr>` +
+    r.rows.map(x => `<tr><td>${esc(x.option)}</td><td><b>${x.area} m²</b></td><td><b>${x.mass} kg</b></td><td>${esc(x.notes)}</td></tr>`).join('') +
+    `</table><p>With the wax, the radiator is <b>${r.area_saved_pct}% smaller</b> and the cooling system ` +
+    (kg >= 0 ? `<b>${kg} kg lighter</b>` : `<b>${-kg} kg heavier</b>: with panels this light, a bigger radiator weighs less than the wax`) +
+    ` at ${r.panel_kg_m2} kg/m².</p><p class="mut">A radiator facing away from the sun sheds ${r.flux} W/m² at this temperature (ε = 0.85).
+    It must carry the average load, ${r.avg_kw} kW, so the wax can re-freeze between surges. Radiator panels typically weigh 2–10 kg/m²
+    including structure; 5 kg/m² is a common base case. The wax's container is assumed to weigh half as much as the wax.</p>`;
+}
+Object.keys(SIZE_IN).forEach(k => $('#' + k).oninput = () => { clearTimeout(sizeTimer); sizeTimer = setTimeout(size, 250); });
+
+function draw() {
+  const cv = $('#chart'); if (!last || !cv.offsetWidth) return;
+  const c = last.config, dpr = devicePixelRatio || 1, W = cv.offsetWidth, H = cv.offsetHeight;
+  cv.width = W * dpr; cv.height = H * dpr;
+  const g = cv.getContext('2d'); g.scale(dpr, dpr);
+  const lo = 0, hi = c.t_shutdown + 8, y = v => H - (v - lo) / (hi - lo) * H;
+  g.font = '11px system-ui'; g.setLineDash([4, 4]); g.lineWidth = 1;
+  const lines = [[c.t_warn, COL.WARNING, 'warn'], [c.t_throttle, COL.THROTTLE, 'throttle'], [c.t_shutdown, COL.SHUTDOWN, 'shutdown (T safe)']];
+  lines.push([last.pcm_melt_c, COL.pcm, 'wax melts'], [last.setpoint, COL.grid, 'setpoint'],
+             [c.t_freeze_warn, COL.guard, 'freeze guard'], [c.t_freeze, COL.freeze, 'freeze']);
+  for (const [v, col, l] of lines) {
+    g.strokeStyle = g.fillStyle = col; g.beginPath(); g.moveTo(0, y(v)); g.lineTo(W, y(v)); g.stroke();
+    g.fillText(`${l} ${v}°`, 4, y(v) - 3);
+  }
+  g.setLineDash([]);
+  if (hist.length < 2) return;
+  const t0 = hist[0].t, t1 = hist[hist.length - 1].t, x = t => (t - t0) / Math.max(1, t1 - t0) * W;
+  g.fillStyle = 'rgba(88,166,255,.28)'; g.beginPath(); g.moveTo(0, H);
+  for (const p of hist) g.lineTo(x(p.t), H - p.act * H * 0.3);
+  g.lineTo(W, H); g.fill();
+  g.lineWidth = 2; g.strokeStyle = COL.line; g.beginPath();
+  hist.forEach((p, i) => i ? g.lineTo(x(p.t), y(p.T)) : g.moveTo(x(p.t), y(p.T))); g.stroke();
+}
+addEventListener('resize', draw);
+
+// ---------- guided demo: [caption, actions, seconds] ----------
+// actions: reset | mode=X | speed=N | +flag (turn on) | -flag (turn off). At 1× the relay runs 50 s per second.
+const DEMO = [
+  ['Tier 1, radiators: they face away from the sun and shed the servers\' 500 W as infrared light, holding the water near 28 °C.', 'reset mode=efficiency speed=1', 6],
+  ['A traffic surge triples the load (shown 5× faster). The energy balance says the radiators alone would settle at 106 °C, so tier 2 kicks in: the wax melts and pins the water near 39 °C.', '+spike speed=5', 6],
+  ['The surge goes on. The watchdog warns as the wax runs low, then, tier 3, sheds load to 50%, where the radiators can cope.', '', 8],
+  ['Surge over: full power returns, and spare radiator capacity starts re-freezing the wax for next time.', '-spike', 6],
+  ['A cold plate clogs during another surge (back to 1×). The water looks fine, but the chips heat up fast, so the watchdog sheds load before they reach their limit.', '+spike +cold_plate speed=1', 8],
+  ['Servers go idle (20× faster). The wax\'s stored heat keeps the loop warm while it re-freezes, ready for the next surge.', '-spike -cold_plate +idle speed=20', 6],
+  ['With the wax solid and almost no load, the water would freeze. The freeze guard stows the radiators and routes the loop past the sun-facing side.', '', 6],
+  ['Close solar pass, and attitude control fails: the radiators are stuck facing a sun three times brighter. They are stowed behind the shield, the wax buys time, then the relay goes down safely.', '-idle +solar_pass +adcs_fault', 10]
+];
+async function doActions(text) {
+  for (const a of text.split(' ').filter(Boolean)) {
+    if (a === 'reset') await post('scenario/' + a);
+    else if (a.startsWith('mode=')) await post('setup', {mode: a.slice(5)});
+    else if (a.startsWith('speed=')) await post('setup', {speed: +a.slice(6)});
+    else { const on = a[0] === '+', f = a.slice(1); if (!!last.flags[f] !== on) await post('scenario/' + f); }
+  }
+}
+async function demo() {
+  if (demoOn || !last) return; demoOn = true; showTab('dash'); $('#capcard').hidden = false; scrollTo(0, 0);
+  try {
+    for (const [caption, actions, secs] of DEMO) { $('#cap').textContent = caption; await doActions(actions); await sleep(secs * 1000); }
+    await post('setup', {speed: 1});
+    $('#cap').textContent = 'Demo finished. Press Reset, or try the scenario buttons yourself.'; await sleep(6000);
+  } finally { $('#capcard').hidden = true; demoOn = false; }
+}
+$('#go').onclick = demo;
+
+// ---------- live updates: Server-Sent Events, with polling as a fallback ----------
+function onSnapshot(s) {
+  const lastT = () => hist.length ? hist[hist.length - 1].t : -1;
+  if (s.t < lastT()) hist = [];                              // time went backwards: the simulation was reset
+  const fresh = (s.new || []).filter(p => p.t > lastT());    // skip points we already have
+  hist.push(...fresh); if (hist.length > 900) hist.splice(0, hist.length - 900);
+  render(s); draw();
+}
+// ---------- no server (GitHub Pages or any static host): run coolant/core.py in the browser via Pyodide ----------
+const PYODIDE = 'https://cdn.jsdelivr.net/npm/pyodide@0.29.5/pyodide.js';
+const BRIDGE = `
+import json
+from core import Engine, sizing
+engine = Engine()
+
+def call(path, body):                 # mirrors the routes in coolant/server.py
+    body = json.loads(body) if body else {}
+    if path == "state":
+        return json.dumps(engine.snapshot(history=True))
+    if path == "size":
+        return json.dumps(sizing(**body))
+    if path == "setup":
+        return json.dumps(engine.setup(**body))
+    if path.startswith("scenario/"):
+        return json.dumps(engine.scenario(path.split("/", 1)[1]))
+    raise ValueError(path)
+
+def tick(since):                      # one 0.1 s tick of the control loop, like Engine._loop
+    for _ in range(engine.speed):
+        engine.step()
+    return json.dumps(engine.snapshot(since=since))
+`;
+async function startInBrowser() {
+  $('#sub').textContent = 'No server here, so the controller is starting inside your browser (Python via WebAssembly). The first load takes 10 to 20 seconds…';
+  await new Promise((ok, fail) => { const s = document.createElement('script'); s.src = PYODIDE; s.onload = ok; s.onerror = fail; document.head.append(s); });
+  const py = await loadPyodide();
+  py.FS.writeFile('core.py', await (await fetch('../coolant/core.py')).text());
+  py.runPython(BRIDGE);
+  const call = py.globals.get('call'), tick = py.globals.get('tick');
+  local = async (path, body) => JSON.parse(call(path, body ? JSON.stringify(body) : ''));
+  setInterval(() => onSnapshot(JSON.parse(tick(hist.length ? hist[hist.length - 1].t : -1))), 100);
+  $('#dot').classList.add('live'); $('#dot').title = 'running in your browser';
+  $('#where').textContent = 'running in your browser';
+}
+
+// ---------- start: live updates from the server (Server-Sent Events, polling as a fallback) ----------
+(async () => {
+  let server = false;   // the laptop server serves this page at the site root; GitHub Pages serves it from /<repo>/web/
+  if (location.pathname === '/' || location.pathname === '/index.html')
+    try { const r = await fetch('/api/state'); server = r.ok && (r.headers.get('content-type') || '').includes('json'); } catch (e) {}
+  const go = $('#welcomego');
+  if (!server) {
+    welcome();                                                   // judges arriving from the QR code
+    go.disabled = true; go.textContent = 'Loading the controller…';
+    try { await startInBrowser(); }
+    catch (e) {
+      $('#welcome').hidden = true;
+      $('#sub').textContent = 'Could not start the controller in this browser. Check the internet connection and refresh.'; return;
+    }
+  }
+  const s = await api('state'); hist = s.history; render(s); draw();
+  if (!server) { go.disabled = false; go.textContent = '▶ Watch the 1-minute guided demo'; return; }
+  $('#where').textContent = 'live server';
+  const es = new EventSource('/api/stream');
+  es.onopen = () => { setConn(true); clearInterval(polling); polling = null; };
+  es.onmessage = e => onSnapshot(JSON.parse(e.data));
+  es.onerror = () => {
+    setConn(false);
+    if (!polling) polling = setInterval(async () => {
+      try { const s = await api('state'); hist = s.history; render(s); draw(); } catch (e) {}   // server down: keep trying
+    }, 1000);
+  };
+})();
+</script>
+</body></html>

@@ -14,7 +14,7 @@ from fastapi import Body, FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from .core import Engine
+from .core import Engine, sizing
 
 
 def make_engine():
@@ -35,7 +35,7 @@ async def lifespan(_):
     engine.stop()
 
 
-app = FastAPI(title="Autonomous Thermal Controller", lifespan=lifespan)
+app = FastAPI(title="Relay Thermal Watchdog", lifespan=lifespan)
 
 
 @app.get("/api/state")
@@ -59,9 +59,18 @@ async def stream():
 
 @app.post("/api/setup")
 def setup(options: dict = Body(...)):
-    """Change environment, sink, mode and/or speed, e.g. {"env": "orbital", "mode": "stealth"}."""
+    """Change mode and/or speed, e.g. {"mode": "stealth", "speed": 5}."""
     try:
         return engine.setup(**options)
+    except (ValueError, TypeError) as e:
+        raise HTTPException(422, str(e))
+
+
+@app.post("/api/size")
+def size(options: dict = Body(...)):
+    """Radiator + PCM sizing, e.g. {"normal_kw": 0.5, "surge_kw": 1.5, "surge_min": 30, "between_h": 6}."""
+    try:
+        return sizing(**options)
     except (ValueError, TypeError) as e:
         raise HTTPException(422, str(e))
 
