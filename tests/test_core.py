@@ -146,7 +146,7 @@ def test_attitude_failure_in_a_solar_pass_goes_down_safely():
     e.scenario("solar_pass")
     e.scenario("adcs_fault")
     seen, hi = states_during(e, 2000, lambda e: e.last["true_T"])
-    assert seen == ["NORMAL", "WARNING", "THROTTLE", "SHUTDOWN"]
+    assert seen == ["WARNING", "THROTTLE", "SHUTDOWN"]     # a failed attitude system is a warning at once
     assert logged(e, "stowing them behind the shield") and logged(e, "wax PCM absorbing")
     assert e.hal.dep == 0 and hi < e.cfg.t_shutdown + 1
 
@@ -359,6 +359,50 @@ def test_a_frozen_program_is_caught_by_the_hardware_watchdog():
     e.scenario("hang")                  # the program is back: off for 2 min, then a gentle restart
     seen, _ = states_during(e, 150)
     assert seen == ["SHUTDOWN", "THROTTLE", "NORMAL"] and not e.hal.watchdog_tripped
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_a_long_freeze_leaves_the_loop_in_a_safe_state(mode):
+    e = Engine(mode=mode)
+    run(e, 100)
+    e.scenario("hang")
+    lo, hi = extremes(e, 3 * 720)       # frozen for 3 hours
+    assert e.hal.cmd["survival"] and e.hal.dep == 0 and e.hal.load_w == 0
+    assert e.cfg.t_freeze < lo and hi < e.cfg.t_warn     # stowed and thermostat-heated: no freezing, no cooking
+
+
+def test_no_flow_stows_the_radiators_so_the_panels_dont_freeze():
+    e = Engine()
+    run(e, 100)
+    e.scenario("pump_fail")
+    e.scenario("backup_fail")
+    run(e, 30)
+    assert e.last["state"] == "SHUTDOWN" and e.hal.dep == 0 and e.hal.cmd["survival"] and e.hal.cmd["sun"] == 0
+
+
+def test_attitude_failure_alone_is_a_warning_not_a_shutdown():
+    e = Engine()
+    run(e, 100)
+    e.scenario("adcs_fault")            # stuck 20° off the sun at 1 AU: the radiators still shed more than they take
+    seen, _ = states_during(e, 720)
+    assert seen == ["WARNING"] and e.last["load"] == 1.0 and "Attitude control failed" in titles(e)
+
+
+def test_stealth_with_a_failed_attitude_does_not_flap():
+    e = Engine(mode="stealth")
+    run(e, 60)
+    e.scenario("adcs_fault")
+    seen, hi = states_during(e, 3 * 720, lambda e: e.last["true_T"])
+    assert "THROTTLE" not in seen and len(seen) <= 2 and hi < e.cfg.t_warn   # full load fits, so no shedding
+
+
+def test_a_radiation_storm_with_one_sensor_already_failed():
+    e = Engine()
+    run(e, 50)
+    e.scenario("sensor_fault")          # S1 is stuck at 99 °C, and then the storm hits the other two
+    e.scenario("radiation")
+    seen, lowest_load = states_during(e, 3 * 720, lambda e: -e.last["load"])
+    assert lowest_load == -1.0 and set(seen) <= {"NORMAL", "WARNING"} and len(seen) <= 6
 
 
 def test_out_near_mars_the_freeze_guard_holds_with_less_sun():

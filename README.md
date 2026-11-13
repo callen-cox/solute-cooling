@@ -31,12 +31,13 @@ Every 5 s of relay time the controller does four things:
 - **It survives radiation.** Out in solar orbit there's no planet's magnetic field to block it, so readings and memory get corrupted now and then.
   - A reading the water can't physically produce (out of range, or a jump faster than `max_rate`) is ignored. A sensor that keeps doing it for more than `glitch_steps` readings in a row is treated as failed.
   - The safety limits are kept in three spare copies, and every step a vote repairs any that a bit flip changed.
-- **It watches the pump.** In free fall the water only moves while a pump drives it. If the flow drops below `min_flow`, pump B takes over at once. If neither pump moves the water, the servers go down within 15 seconds.
+- **It watches the pump.** In free fall the water only moves while a pump drives it. If the flow drops below `min_flow`, pump B takes over at once. If neither pump moves the water, the servers go down within 15 seconds and the radiators are stowed, so the water standing in them doesn't freeze.
 - **It doesn't flap.** Load stays shed for at least 5 minutes, and until full power would fit again. After a shutdown it stays off at least 2 minutes and restarts at half load.
 - **It fails safe.**
   - With no trustworthy reading it shuts the servers down and stows the radiators.
   - A survival heater with its own hardware thermostat keeps the water liquid.
-  - If the control software crashes, it cuts server power. If it freezes instead, its heartbeat stops and a hardware watchdog cuts the power after 30 seconds.
+  - If the control software crashes, it cuts server power. If it freezes instead, its heartbeat stops, and after 30 seconds a hardware watchdog puts the relay in its safe state: servers off, radiators stowed, valves shut, survival thermostat on.
+- **A failed attitude system is a warning at once,** even while the radiators still shed more heat than they absorb.
 - **The alerts panel** lists everything wrong right now under a flashing red warning sign, most serious first.
 
 ## Modes
@@ -131,6 +132,10 @@ Subclass `coolant.core.HAL`, then run with `COOLANT_HAL="my_hw:MyHAL" COOLANT_TI
 - **In orbit, hot water doesn't rise.** Convection needs gravity, so the loop has a small pump. A loop heat pipe, which moves its fluid with a capillary wick (usually ammonia, which doesn't freeze until −78 °C), would do it with no pump.
 - **Radiators shed heat in proportion to their area,** so they are thin panels, not tanks. Sizing them for the average load and letting the wax absorb the peaks is what saves material.
 - **Water expands about 9% when it freezes** and can split pipes, so the freeze guard is not optional.
+- **Still water in a deployed radiator freezes within minutes.** If the pump stops, 0.5 kg of water in 1.5 m² of panels reaches 0 °C in about 2 minutes and is frozen solid in about 7 (about 13 and 46 minutes stowed). The controller stows the panels, but a real relay would put ammonia or a water–glycol mix in the outer loop, as the ISS does, or heat the panels.
+- **The sun-side pass must never hold still water.** A dark absorber in full sun heads for about 120 °C at 1 AU and about 240 °C on a close pass, enough to boil the loop. It needs a shutter or guaranteed flow.
+- **The wax saves radiator area more than mass.** In the Sizing tab's default case it cuts the area by 62% but the mass by only 1.2 kg, and with light 2 kg/m² panels the wax and its container weigh more than the radiator they replace. With 10 kg/m² panels it saves 12.6 kg.
+- **The margins are thin.** The default radiator is sized right at the average load. In the simulator the design case (30-minute surges every 6 hours) never sheds load, but surges twice as long or twice as often, or a radiator that loses 10% of its view to deep space, all do.
 - **The simulator is a demo, not a validated model.**
   - 4 kg of water and 1.5 m² of radiator (ε 0.85, α 0.15).
   - 6 kg of wax, and a 15% leak when the radiators are stowed.
