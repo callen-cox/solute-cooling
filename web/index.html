@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Autonomous Thermal Controller</title>
+<title>Relay Thermal Watchdog</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧊</text></svg>">
 <script>/* pick the theme before anything paints, so light-mode visitors don't see a dark flash */
 (() => { let t = null; try { t = localStorage.getItem('thermal.theme'); } catch (e) {}
@@ -35,7 +35,42 @@ select:disabled{opacity:.4}
 button.on{border-color:var(--acc);color:var(--acc)}
 button:hover,select:hover{border-color:var(--mut)}
 .tabs{display:flex;gap:6px;margin-right:auto}
-main{padding:0 16px 84px;max-width:1040px;margin:auto}
+.layout{display:grid;grid-template-columns:minmax(0,1040px);justify-content:center}
+main{padding:0 16px 84px;min-width:0}
+/* alerts: everything wrong right now, under a flashing red warning sign.
+   Wide screens: a sticky column on the right. Narrower: a floating button, bottom-left. */
+.alerts{display:flex;flex-direction:column;gap:10px}
+.alertbtn{display:flex;align-items:center;gap:12px;width:100%;text-align:left;border-radius:12px;padding:12px 14px}
+.alertbtn b{display:block;font-size:15px;text-transform:uppercase;letter-spacing:.04em}
+.alertbtn small{display:block;color:var(--mut);font-size:12px}
+.alerts.on .alertbtn{border:2px solid var(--off)}
+.alerts.on .alertbtn b{color:var(--off)}
+.alerts.clear .alertbtn{cursor:default}.alerts.clear .alertbtn b{color:var(--ok)}
+.sign{width:46px;height:46px;flex:none}
+.warnsign{color:var(--off)}.oksign{color:var(--ok)}
+.alerts.clear .warnsign,.alerts.on .oksign{display:none}
+.alerts.on .warnsign{animation:flash 1.2s infinite}
+@keyframes flash{0%,55%{opacity:1}56%,100%{opacity:.15}}
+.alertlist{display:grid;gap:8px}.alertlist[hidden]{display:none}
+.alert{background:var(--card);border:1px solid var(--line);border-left:5px solid var(--warn);border-radius:8px;padding:8px 10px;font-size:13px}
+.alert.critical{border-left-color:var(--off)}
+.alert i{display:block;font-style:normal;font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--warn)}
+.alert.critical i{color:var(--off)}
+.alert b{display:block;font-size:14px}.alert span{display:block;color:var(--mut)}
+@media (min-width:1200px){
+ .layout{grid-template-columns:minmax(0,1040px) 280px;padding-right:16px}
+ .alerts{position:sticky;top:16px;align-self:start;max-height:calc(100vh - 32px);overflow:auto}
+}
+@media (max-width:1199px){
+ .alerts{position:fixed;left:16px;bottom:calc(16px + env(safe-area-inset-bottom, 0px));z-index:8;
+  flex-direction:column-reverse;align-items:flex-start;max-width:calc(100vw - 32px)}
+ .alerts.clear{display:none}
+ .alertbtn{width:auto;max-width:calc(100vw - 92px);padding:8px 16px 8px 10px;border-radius:99px;box-shadow:0 4px 14px var(--shadow)}
+ .alertbtn small{display:none}.sign{width:28px;height:28px}
+ .alertlist{width:min(360px,calc(100vw - 32px));max-height:55vh;overflow:auto;background:var(--card);
+  border:1px solid var(--line);border-radius:12px;padding:10px;box-shadow:0 8px 24px var(--shadow)}
+}
+@media (prefers-reduced-motion:reduce){.alerts.on .warnsign{animation:none}}
 .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:12px}.grid .card{margin:0}
 .big{font-size:44px;font-weight:700;line-height:1.1}.mid{font-size:24px;font-weight:700}.mut{color:var(--mut);font-size:13px}
@@ -65,22 +100,21 @@ table{border-collapse:collapse;width:100%;font-size:14px}td,th{border-bottom:1px
 .form label{display:flex;flex-direction:column;font-size:12px;color:var(--mut);gap:4px}
 input{background:var(--bg);color:var(--tx);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:inherit;width:170px}
 </style></head><body>
-<header><h1 tabindex="-1">🧊 Autonomous Thermal Controller</h1><button id="share" title="QR code for the live demo">📱<span class="hide-sm"> Share</span></button>
+<header><h1 tabindex="-1">🛰️ Relay Thermal Watchdog</h1><button id="share" title="QR code for the live demo">📱<span class="hide-sm"> Share</span></button>
  <button id="theme" title="Switch between light and dark mode">☀️<span class="hide-sm"> Light</span></button><span id="badge" class="badge">…</span><span id="where" class="mut"></span><span id="dot" title="live connection"></span></header>
 <nav>
  <div class="tabs"><button class="on" data-tab="dash">Dashboard</button><button data-tab="how">How it works</button><button data-tab="size">Sizing</button></div>
- <label>Environment<select id="env"><option value="terrestrial">Terrestrial</option><option value="orbital">Orbital</option></select></label>
- <label>Cooling sink<select id="sink"><option value="salt">Salt dissolution</option><option value="pcm">PCM (reusable)</option></select></label>
  <label>Mode<select id="mode"><option value="efficiency">Efficiency</option><option value="performance">Performance</option><option value="stealth">Stealth</option></select></label>
  <label>Speed<select id="speed"><option value="1">1×</option><option value="5">5×</option><option value="20">20×</option></select></label>
 </nav>
 <div id="qr" hidden><div class="qrbox"><img src="qr.png" alt="QR code for the live demo"><h3>Scan to try it live</h3>
  <div>callen-cox.github.io/solute-cooling</div><p><button id="qrclose">Close</button></p></div></div>
+<div class="layout">
 <main>
 <section id="dash">
  <div class="card welcome" id="welcome" hidden><button class="x" id="welcomex" title="Dismiss">✕</button>
   <h3>👋 New here?</h3>
-  <div>This is an autonomous cooling controller for small data centers with no room for a radiator. It's running live in your browser, so go ahead and break things with the scenario buttons.</div>
+  <div>This is the autonomous thermal watchdog for a communication relay in orbit around the sun, linking habitat ships. It keeps the servers cool with radiators, then wax that melts, then a safe shutdown. It's running live in your browser, so go ahead and break things with the scenario buttons.</div>
   <p><button id="welcomego" class="primary">▶ Watch the 1-minute guided demo</button><button id="welcomehow">How it works</button></p></div>
  <div class="card" id="capcard" hidden><b>▶ Guided demo</b><div id="cap"></div></div>
  <div class="card">
@@ -88,7 +122,7 @@ input{background:var(--bg);color:var(--tx);border:1px solid var(--line);border-r
    <div style="text-align:right"><div class="mut">Hottest chip</div><div class="big2" id="chip">–</div></div></div>
   <div class="mut" id="sub"></div><div id="brain"></div>
   <canvas id="chart"></canvas>
-  <div class="legend"><span><b style="background:var(--tx)"></b>coolant °C</span><span><b style="background:#58a6ff"></b><span id="actlbl">dosing</span></span><span>dashed = setpoint and safety limits</span></div>
+  <div class="legend"><span><b style="background:var(--tx)"></b>coolant °C</span><span><b style="background:#58a6ff"></b>PCM wax melted</span><span>dashed = setpoint and safety limits</span></div>
  </div>
  <div class="grid" id="tiles"></div>
  <div class="card"><div class="mut">Try a scenario (click again to turn off)</div><div class="row" id="scn"></div></div>
@@ -96,74 +130,84 @@ input{background:var(--bg);color:var(--tx);border:1px solid var(--line);border-r
 </section>
 
 <section id="how" hidden>
- <div class="card"><h3>The idea</h3>
-  Small data centers often have no room for a radiator: an office building's server closet, a cramped site in a developing region, or a relay in orbit.
-  This controller treats the coolant as a <b>finite thermal sink</b> and manages it autonomously, with a safety supervisor that can always overrule it.</div>
+ <div class="card"><h3>The problem: escape to space</h3>
+  Habitat ships need fast, reliable links, so communication relays orbit the sun between them. Each relay's servers make heat, and in space there is no air or water to carry it away:
+  heat can only leave as infrared light from a radiator (Q = εσAT⁴). Radiators sized for the worst case are big and heavy, and at low load the water inside them can freeze.
+  This watchdog runs the cooling autonomously, safely and with as little hardware as possible.</div>
 
- <div class="card"><h3>Three layers, every control step</h3><div class="stack">
-  <div class="layer" style="--c:var(--off)"><b>1 · Safety supervisor</b> (highest priority) overrides everything: NORMAL → WARNING → THROTTLE → SHUTDOWN.</div>
-  <div class="layer" style="--c:var(--warn)"><b>2 · Optimisation mode</b> Efficiency, Performance or Stealth decides how to spend the cooling.</div>
-  <div class="layer" style="--c:var(--acc)"><b>3 · Cooling sink</b> Salt dissolution, PCM modules or orbital radiators do the physical work.</div></div></div>
+ <div class="card"><h3>Three tiers, with a watchdog above them</h3><div class="stack">
+  <div class="layer" style="--c:var(--acc)"><b>Tier 1 · Radiators</b> A pumped water loop carries server heat to radiator panels that face away from the sun, coordinated with the flight computer that points the solar arrays at it.</div>
+  <div class="layer" style="--c:var(--warn)"><b>Tier 2 · Wax PCM</b> When the radiators alone can't keep up, a valve routes the loop through n-eicosane wax, which absorbs 247 kJ/kg as it melts at 36.6 °C. Spare radiator capacity re-freezes it later, ready for the next surge.</div>
+  <div class="layer" style="--c:var(--off)"><b>Tier 3 · Go down safely</b> If that still isn't enough, the watchdog sheds load to 50%, then shuts the servers down, with the radiators stowed behind their shield if the sun is on them, until it cools.</div>
+  <div class="layer" style="--c:#79c0ff"><b>Freeze guard</b> At low load it stows the radiators and warms the loop with the cheapest heat first: the wax's stored heat, then a pass past the sun-facing side, and only then an electric heater.</div></div></div>
 
  <div class="card"><h3>Safety ladders (live)</h3>
   <div class="mut">Coolant</div><div class="ladder" id="ladder"></div>
   <div class="mut">Hottest chip</div><div class="ladder" id="ladder2"></div>
-  <div class="mut">White markers = current temperatures. The supervisor watches both. <b>Warn</b>: alert and maximum cooling. <b>Cut</b>: IT load halved, held at least 5 min.
+  <div class="mut">White markers = current temperatures. The watchdog watches both. <b>Warn</b>: alert and maximum cooling. <b>Cut</b>: IT load halved, held at least 5 min.
   <b>Off</b>: clean shutdown, latched until the coolant is back under 46 °C. Coolant: warn 52, cut 56, off 60 °C (T<sub>safe</sub>), loop hardware limit 85 °C.
-  Chips: warn 80, cut 85, off 90 °C, damage 100 °C. The config refuses any setting with under 10 °C of margin. In orbit a freeze guard also protects the bottom of the range.</div></div>
+  Chips: warn 80, cut 85, off 90 °C, damage 100 °C. The config refuses any setting with under 10 °C of margin. The freeze guard protects the bottom of the range.</div></div>
 
- <div class="card"><h3>Every step</h3><ol>
+ <div class="card"><h3>Every step (every 5 s of relay time)</h3><ol>
   <li><b>Sense</b>: three sensors are median-voted, so a broken one is outvoted. Each is also compared with the others over about 30 seconds, so one that slowly drifts is dropped before it can fool the vote. With no usable data it assumes the worst and shuts down.</li>
-  <li><b>Predict</b>: the trend is projected 60 s ahead (10 min in orbit). For the salt, a learned model of the room predicts 5 minutes ahead (below).</li>
-  <li><b>Supervise</b>: the ladders above, for the coolant and the hottest chip. Running low on cooling escalates early. Running out triggers a graceful power-down.</li>
-  <li><b>Act</b>: the mode drives the sink (below).</li></ol></div>
+  <li><b>Forecast</b>: an energy balance (server heat + absorbed sunlight = radiated heat) gives the temperature the water would settle at with the radiators fully out. Above the wax's melting point, the radiators can't keep up on their own. The trend is also projected 5 minutes ahead.</li>
+  <li><b>Supervise</b>: the ladders above, for the coolant and the hottest chip. Everything wrong right now is listed in the alerts panel, under a flashing red warning sign, most serious first.</li>
+  <li><b>Act</b>: the mode sets the radiators, the wax valve and the freeze guard (below).</li></ol></div>
 
- <div class="card"><h3>The brain: what makes it smart</h3><ul>
-  <li><b>It learns the room.</b> It starts from the design sheet (25 kg of water, a 10 W/K leak to the room) and learns the real heat capacity, leak and heat absorbed per gram from its own sensor data, using recursive least squares (a Kalman filter). The <i>Learned room model</i> tile shows each value with its uncertainty (the simulator's true values are 20 kg, 15 W/K and 277 J/g).
-  Water and J/g lock in within minutes. The leak stays uncertain until the temperature swings (try a scheduled job), because a steady room can't reveal it.</li>
-  <li><b>It plans ahead (model-predictive control).</b> Every 5 s it simulates the next 5 minutes for dozens of dosing rates and picks the one that keeps the coolant in its band for the least salt. When a job is scheduled, it decides to pre-cool on its own.</li>
+ <div class="card"><h3>The watchdog: what makes it safe</h3><ul>
+  <li><b>A forecast alone never shuts the relay down.</b> Forecasts shed load early. A shutdown needs a real reading over the limit, or a forecast that still says too hot after load was shed.</li>
+  <li><b>It watches the chips</b>, not just the water. A clogged cold plate can cook a chip while the coolant looks fine, so it projects the chips' trend, sheds load before they reach their limit, and won't go back to full power while that would overheat them.</li>
   <li><b>It catches bad sensors</b>, both sudden failures (outvoted) and slow drift (dropped before it matters).</li>
-  <li><b>It learns the pump.</b> If the pump delivers less than asked, it notices and compensates.</li>
-  <li><b>It watches the chips</b>, not just the water. A clogged cold plate can cook a chip while the coolant looks fine, so it projects the chips' trend, sheds load before they reach their limit, and won't go back to full power while that would overheat them.</li></ul></div>
+  <li><b>It doesn't flap.</b> Load stays shed for at least 5 minutes, and until full power would fit again. After a shutdown it stays off at least 2 minutes and restarts at half load.</li>
+  <li><b>It fails safe.</b> With no trustworthy reading it shuts the servers down and stows the radiators, and a survival heater with its own hardware thermostat keeps the water liquid. If the control software itself crashes, a software watchdog cuts server power.</li></ul></div>
 
- <div class="card"><h3>The three cooling sinks</h3><table>
-  <tr><th>Sink</th><th>Physics</th><th>What the controller does</th></tr>
-  <tr><td><b>Salt</b><br>terrestrial</td><td>Dissolving NH<sub>4</sub>Cl absorbs 277 J/g (ΔH<sub>soln</sub> = +14.8 kJ/mol), like an instant cold pack. It is consumed: about 13 kg per kWh.</td>
-   <td>Doses grams per second by model-predictive control, learns the pump and the room, and tracks saturation against the coldest planned temperature, because NH<sub>4</sub>Cl is less soluble when cold.
-   At 85% it swaps to a reserve tank. With no reserve it stops dosing before crystals clog the cold plates.</td></tr>
-  <tr><td><b>PCM</b><br>terrestrial</td><td>Sodium thiosulfate pentahydrate melts at 48.3 °C and absorbs about 200 kJ/kg doing it, then re-solidifies to be reused.</td>
-   <td>Runs one module at a time and swaps when it is spent. When the modules are half spent it schedules a low-power state so idle ones re-solidify.</td></tr>
-  <tr><td><b>Radiators</b><br>orbital</td><td>No air in space, so heat only leaves as radiation: Q = εσAT⁴. Sunlight adds αSA·cos θ.</td>
-   <td>Keeps the radiators edge-on to the sun. If they absorb more than they emit (stuck facing the sun), it retracts them behind the MLI shield.
-   A freeze guard (heater, sun-facing, retraction) keeps the water above 5 °C.</td></tr></table></div>
+ <div class="card"><h3>The physics, honestly</h3><ul>
+  <li><b>In orbit, hot water doesn't rise.</b> Convection needs gravity, so the loop has a small pump. A loop heat pipe, which moves its fluid with a wick, would do it with no pump at all.</li>
+  <li><b>Radiators shed heat in proportion to their area</b>, so they are thin panels, not tanks. Sizing them for the average load and letting the wax absorb the peaks is what saves material: see the Sizing tab.</li>
+  <li><b>Water expands about 9% when it freezes</b> and can split pipes, which is why the freeze guard matters.</li>
+  <li><b>Orbiting the sun, there is no planet shadow</b>, so the sunlight is constant. A close pass (3× the sunlight) is the relay swinging nearer the sun.</li></ul></div>
 
  <div class="card"><h3>Modes</h3><table>
-  <tr><th>Mode</th><th>Goal</th><th>Salt</th><th>PCM</th><th>Orbit</th></tr>
-  <tr><td><b>Efficiency</b></td><td>Save consumables and wear</td><td>Floats up to 40 °C, letting the room carry some heat</td><td>Schedules regeneration</td><td>Floats near 28 °C, slews only when needed</td></tr>
-  <tr><td><b>Performance</b></td><td>Coolest chips</td><td>Holds 25 °C and pre-cools before scheduled jobs</td><td>Never caps load for regeneration</td><td>Radiators out, holds about 20 °C</td></tr>
-  <tr><td><b>Stealth</b></td><td>Minimal thermal signature</td><td>Holds room temperature, so almost no heat leaks out</td><td>Idle modules stay insulated</td><td>Stores heat in the water, radiates in a safe window</td></tr></table></div>
+  <tr><th>Mode</th><th>Goal</th><th>What it does</th></tr>
+  <tr><td><b>Efficiency</b></td><td>Save power and wear</td><td>Floats the water near 28 °C and re-freezes the wax as fast as spare radiator capacity allows</td></tr>
+  <tr><td><b>Performance</b></td><td>Coolest chips</td><td>Radiators out, holds about 20 °C, and re-freezes the wax without warming up</td></tr>
+  <tr><td><b>Stealth</b></td><td>Minimal thermal signature</td><td>Keeps the radiators stowed and stores heat in the wax, then radiates it in a safe window</td></tr></table></div>
 
  <div class="card"><h3>Where it runs</h3><ul>
   <li><b>On a laptop:</b> <code>start.bat</code> runs the Python control loop as a FastAPI server, and this page streams from it.</li>
   <li><b>Online:</b> with no server, this page loads Python into your browser (Pyodide, WebAssembly) and runs the exact same <code>coolant/core.py</code>.</li>
-  <li><b>On real hardware:</b> swap the simulator for a <code>HAL</code> class that reads real sensors and drives a real pump, radiators or server power caps.</li></ul></div>
+  <li><b>On real hardware:</b> swap the simulator for a <code>HAL</code> class that reads real sensors and drives the real valves, radiator deployment, heater and server power caps, alongside the flight computer.</li></ul></div>
 
- <div class="card"><h3>Guided demo</h3><div class="mut">Plays about a minute of scenarios with captions, for the environment and sink selected at the top.</div>
+ <div class="card"><h3>Guided demo</h3><div class="mut">Plays about a minute of scenarios with captions: all three tiers, the chips, the freeze guard and a failure.</div>
   <p><button id="go">▶ Run guided demo</button></p></div>
 </section>
 
 <section id="size" hidden>
- <div class="card"><h3>Sizing calculator</h3>
-  <div class="mut">How much of each option it takes to soak up a heat load with no radiator.</div>
+ <div class="card"><h3>Radiator + PCM sizing</h3>
+  <div class="mut">Compare a radiator big enough for the worst surge with a smaller radiator for the average load plus wax that absorbs the surges.</div>
   <div class="form">
-   <label>Server heat load (kW)<input id="kw" type="number" value="2" min="0.1" step="0.5"></label>
-   <label>For how long (hours)<input id="hours" type="number" value="1" min="0.1" step="0.5"></label>
-   <label>Coolant temperature (°C)<input id="coolc" type="number" value="40" min="0" max="45" step="1"></label>
-   <label>Orbital radiator temperature (°C)<input id="radc" type="number" value="30" step="5"></label>
+   <label>Normal load (kW)<input id="kw" type="number" value="0.5" min="0.01" step="0.1"></label>
+   <label>Surge load (kW)<input id="surge" type="number" value="1.5" min="0.01" step="0.1"></label>
+   <label>Surge length (min)<input id="smin" type="number" value="30" min="1" step="5"></label>
+   <label>Time between surges (h)<input id="gap" type="number" value="6" min="0.5" step="0.5"></label>
+   <label>Radiator temperature (°C)<input id="radc" type="number" value="30" step="5"></label>
+   <label>Panel mass (kg/m²)<input id="kgm2" type="number" value="5" min="0.5" max="50" step="0.5"></label>
   </div></div>
  <div class="card" id="sizeout"><div class="mut">Enter a load to see the numbers.</div></div>
 </section>
 </main>
+<aside id="alerts" class="alerts clear" aria-label="Active alerts">
+ <button id="alertbtn" class="alertbtn" aria-expanded="false" aria-controls="alertlist">
+  <svg class="sign warnsign" viewBox="0 0 48 48" aria-hidden="true"><path d="M24 5 L45 42 H3 Z" fill="currentColor"
+   stroke="currentColor" stroke-width="5" stroke-linejoin="round"/><rect x="21.5" y="16" width="5" height="15" rx="2.5" fill="#fff"/>
+   <circle cx="24" cy="36.5" r="3" fill="#fff"/></svg>
+  <svg class="sign oksign" viewBox="0 0 48 48" aria-hidden="true"><circle cx="24" cy="24" r="21" fill="currentColor"/>
+   <path d="M14 25 l7 7 l13 -15" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  <span><b id="alertcount" aria-live="polite">All clear</b><small id="alerthint">no faults detected</small></span>
+ </button>
+ <div id="alertlist" class="alertlist" hidden></div>
+</aside>
+</div>
 <button id="totop" class="totop" title="Back to top" aria-label="Back to top">↑</button>
 
 <script>
@@ -175,7 +219,6 @@ const PALETTE = {dark:  {NORMAL:'#3fb950', WARNING:'#d29922', THROTTLE:'#f0883e'
                          pcm:'#1b7c83', guard:'#218bff', freeze:'#0550ae'}};
 const BRIGHT = PALETTE.dark;
 let theme = 'dark', COL = PALETTE.dark;
-const ACT = {salt:'dosing rate', pcm:'PCM melted (avg)', orbit:'radiator deployment'};
 let hist = [], last = null, demoOn = false, scnKey = '', polling = null, local = null;
 
 // ---------- talking to the backend: the Python server, or the same Python running in this browser ----------
@@ -220,6 +263,37 @@ toTop.onclick = () => {
 };
 topCheck();
 
+// ---------- alerts: everything wrong right now, under a flashing red warning sign ----------
+// The list comes from the controller (s.alerts), plus one the dashboard adds itself if it loses the live feed.
+const esc = t => String(t).replace(/[&<>"]/g, ch => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[ch]));
+const wide = matchMedia('(min-width: 1200px)');
+let alertKey = '', alertOpen = null, connLost = false;          // alertOpen null = default: open on wide screens
+const alertsOpen = () => alertOpen === null ? wide.matches : alertOpen;
+function renderAlerts(s) {
+  const list = (s.alerts || []).slice();
+  if (connLost) list.unshift({level: 'critical', title: 'Live connection lost', detail: 'retrying: the numbers may be out of date'});
+  const faults = Object.values(s.flags || {}).some(Boolean), open = alertsOpen(), n = list.length;
+  const key = JSON.stringify([list, faults, open]);
+  if (key === alertKey) return;                                  // only touch the page when something changed
+  alertKey = key;
+  const box = $('#alerts');
+  box.classList.toggle('on', n > 0); box.classList.toggle('clear', n === 0);
+  $('#alertcount').textContent = n ? `${n} active alert${n > 1 ? 's' : ''}` : 'All clear';
+  $('#alerthint').textContent = n ? (open ? 'click to hide the list' : 'click to see them') : 'no faults detected';
+  $('#alertbtn').setAttribute('aria-expanded', String(n > 0 && open));
+  $('#alertlist').hidden = !(n > 0 && open);
+  $('#alertlist').innerHTML = list.map(a => `<div class="alert ${a.level}"><i>${esc(a.level)}</i><b>${esc(a.title)}</b>` +
+      (a.detail ? `<span>${esc(a.detail)}</span>` : '') + '</div>').join('') +
+    (faults ? '<button data-clear>✖ Clear all</button>' : '');
+}
+$('#alertbtn').onclick = () => {
+  if (!$('#alerts').classList.contains('on')) return;
+  alertOpen = !alertsOpen(); if (last) renderAlerts(last);
+};
+$('#alertlist').onclick = e => { if (e.target.closest('[data-clear]')) post('scenario/clear'); };
+wide.addEventListener('change', () => { alertOpen = null; if (last) renderAlerts(last); });
+function setConn(ok) { connLost = !ok; $('#dot').classList.toggle('live', ok); if (last) renderAlerts(last); }
+
 // ---------- "New here?" banner: live link only, once per device ----------
 // The browser itself remembers that it has seen the banner (localStorage). Nothing is sent anywhere and no one is tracked.
 function welcome() {
@@ -231,7 +305,7 @@ $('#welcomex').onclick = () => { $('#welcome').hidden = true; };
 $('#welcomego').onclick = () => { $('#welcome').hidden = true; demo(); };
 $('#welcomehow').onclick = () => showTab('how');
 $('#qr').onclick = e => { if (e.target.id === 'qr' || e.target.id === 'qrclose') $('#qr').hidden = true; };
-['env', 'sink', 'mode', 'speed'].forEach(k => $('#' + k).onchange = () =>
+['mode', 'speed'].forEach(k => $('#' + k).onchange = () =>
   post('setup', {[k]: k === 'speed' ? +$('#speed').value : $('#' + k).value}));
 $('#scn').onclick = e => { const k = e.target.dataset.k; if (k) post('scenario/' + k); };
 
@@ -239,9 +313,8 @@ $('#scn').onclick = e => { const k = e.target.dataset.k; if (k) post('scenario/'
 function render(s) {
   last = s;
   const b = $('#badge'); b.textContent = s.state; b.style.background = COL[s.state];
-  for (const k of ['env', 'sink', 'mode', 'speed'])
+  for (const k of ['mode', 'speed'])
     if (document.activeElement !== $('#' + k)) $('#' + k).value = s.options[k];
-  $('#sink').disabled = s.options.env === 'orbital';
   $('#T').textContent = s.true_T.toFixed(1) + ' °C'; $('#T').style.color = COL[s.state];
   const c = s.config, chipCol = s.chip == null ? COL.grid : s.chip >= c.chip_shutdown ? COL.SHUTDOWN
     : s.chip >= c.chip_throttle ? COL.THROTTLE : s.chip >= c.chip_warn ? COL.WARNING : COL.NORMAL;
@@ -249,7 +322,6 @@ function render(s) {
   $('#brain').textContent = s.brain ? '🧠 ' + s.brain : '';
   $('#sub').textContent = (s.health === 2 ? 'controller has no trustworthy reading, assuming the worst'
       : `controller sees ${s.T.toFixed(1)}° · predicts ${s.T_pred.toFixed(1)}°`) + ` · setpoint ${s.setpoint}° · ${s.reason}`;
-  $('#actlbl').textContent = ACT[s.kind] || 'actuation';
   $('#tiles').innerHTML = s.tiles.map(t => `<div class="card"><div class="mut">${t.label}</div><div class="mid">${t.value}</div>` +
       (t.pct == null ? '' : `<div class="bar"><i style="width:${Math.max(0, Math.min(100, t.pct))}%"></i></div>`) +
       `<div class="mut">${t.sub}</div></div>`).join('');
@@ -258,6 +330,7 @@ function render(s) {
   document.querySelectorAll('#scn [data-k]').forEach(x => x.classList.toggle('on', !!s.flags[x.dataset.k]));
   $('#log').innerHTML = s.events.slice().reverse().map(e => `<div>t+${Math.round(e.t)} s · ${e.msg}</div>`).join('');
   ladder(s);
+  renderAlerts(s);
 }
 
 function drawLadder(el, seg, hi, v) {        // seg = [from, to, colour, label] ... over 0..hi
@@ -266,10 +339,8 @@ function drawLadder(el, seg, hi, v) {        // seg = [from, to, colour, label] 
     (v == null ? '' : `<i style="left:${Math.min(99.5, Math.max(0, p(v)))}%"></i>`);
 }
 function ladder(s) {
-  const c = s.config, orbit = s.kind === 'orbit';
-  const B = BRIGHT;
-  drawLadder($('#ladder'), (orbit ? [[0, c.t_freeze, '#1f6feb', 'Freeze'], [c.t_freeze, c.t_freeze_warn, '#79c0ff', 'Guard'], [c.t_freeze_warn, c.t_warn, B.NORMAL, 'OK']]
-                                  : [[0, c.t_warn, B.NORMAL, 'OK']])
+  const c = s.config, B = BRIGHT;
+  drawLadder($('#ladder'), [[0, c.t_freeze, '#1f6feb', 'Freeze'], [c.t_freeze, c.t_freeze_warn, '#79c0ff', 'Guard'], [c.t_freeze_warn, c.t_warn, B.NORMAL, 'OK']]
     .concat([[c.t_warn, c.t_throttle, B.WARNING, 'Warn'], [c.t_throttle, c.t_shutdown, B.THROTTLE, 'Cut'],
              [c.t_shutdown, c.t_damage, B.SHUTDOWN, 'Off'], [c.t_damage, c.t_damage + 3, '#8b1d1d', '']]), c.t_damage + 3, s.true_T);
   drawLadder($('#ladder2'), [[0, c.chip_warn, B.NORMAL, 'OK'], [c.chip_warn, c.chip_throttle, B.WARNING, 'Warn'],
@@ -277,34 +348,40 @@ function ladder(s) {
     [c.chip_damage, c.chip_damage + 3, '#8b1d1d', '']], c.chip_damage + 3, s.chip);
 }
 
-// ---------- sizing calculator ----------
+// ---------- radiator + PCM sizing ----------
+const SIZE_IN = {kw: 'normal_kw', surge: 'surge_kw', smin: 'surge_min', gap: 'between_h', radc: 'radiator_c', kgm2: 'panel_kg_m2'};
 let sizeTimer = null;
 async function size() {
-  const body = {kw: +$('#kw').value, hours: +$('#hours').value, coolant_c: +$('#coolc').value, radiator_c: +$('#radc').value};
+  const body = {};
+  for (const [id, key] of Object.entries(SIZE_IN)) body[key] = +$('#' + id).value;
   let r = {};
   try { r = await api('size', 'POST', body); } catch (e) {}
   if (!r || !r.rows) {
-    $('#sizeout').innerHTML = `<div class="mut">${(r && typeof r.detail === 'string' && r.detail) || 'Check the numbers: a load above 0 kW, and a coolant temperature between 0 and 45 °C.'}</div>`;
+    $('#sizeout').innerHTML = `<div class="mut">${esc((r && typeof r.detail === 'string' && r.detail) ||
+      'Check the numbers: a normal load above 0 kW and no bigger than the surge, and positive times.')}</div>`;
     return;
   }
-  $('#sizeout').innerHTML = `<div class="mut">Heat to soak up: <b>${r.kwh} kWh</b> (${r.mj} MJ)</div>
-    <table><tr><th>Option</th><th>Amount</th><th>Notes</th><th>Reusable?</th></tr>` +
-    r.rows.map(x => `<tr><td>${x.option}</td><td><b>${x.amount} ${x.unit}</b></td><td>${x.also}</td><td>${x.reusable ? 'yes' : 'no, used up'}</td></tr>`).join('') +
-    `</table><p class="mut">The demo's 15 kg salt hopper lasts about <b>${r.hopper_minutes} min</b> at ${r.kw} kW.</p>`;
+  const kg = r.mass_saved_kg;
+  $('#sizeout').innerHTML = `<table><tr><th>Option</th><th>Radiator area</th><th>Mass</th><th>Notes</th></tr>` +
+    r.rows.map(x => `<tr><td>${esc(x.option)}</td><td><b>${x.area} m²</b></td><td><b>${x.mass} kg</b></td><td>${esc(x.notes)}</td></tr>`).join('') +
+    `</table><p>With the wax, the radiator is <b>${r.area_saved_pct}% smaller</b> and the cooling system ` +
+    (kg >= 0 ? `<b>${kg} kg lighter</b>` : `<b>${-kg} kg heavier</b>: with panels this light, a bigger radiator weighs less than the wax`) +
+    ` at ${r.panel_kg_m2} kg/m².</p><p class="mut">A radiator facing away from the sun sheds ${r.flux} W/m² at this temperature (ε = 0.85).
+    It must carry the average load, ${r.avg_kw} kW, so the wax can re-freeze between surges. Radiator panels typically weigh 2–10 kg/m²
+    including structure; 5 kg/m² is a common base case. The wax's container is assumed to weigh half as much as the wax.</p>`;
 }
-['kw', 'hours', 'coolc', 'radc'].forEach(k => $('#' + k).oninput = () => { clearTimeout(sizeTimer); sizeTimer = setTimeout(size, 250); });
+Object.keys(SIZE_IN).forEach(k => $('#' + k).oninput = () => { clearTimeout(sizeTimer); sizeTimer = setTimeout(size, 250); });
 
 function draw() {
   const cv = $('#chart'); if (!last || !cv.offsetWidth) return;
   const c = last.config, dpr = devicePixelRatio || 1, W = cv.offsetWidth, H = cv.offsetHeight;
   cv.width = W * dpr; cv.height = H * dpr;
   const g = cv.getContext('2d'); g.scale(dpr, dpr);
-  const lo = last.kind === 'orbit' ? 0 : 15, hi = c.t_shutdown + 8, y = v => H - (v - lo) / (hi - lo) * H;
+  const lo = 0, hi = c.t_shutdown + 8, y = v => H - (v - lo) / (hi - lo) * H;
   g.font = '11px system-ui'; g.setLineDash([4, 4]); g.lineWidth = 1;
   const lines = [[c.t_warn, COL.WARNING, 'warn'], [c.t_throttle, COL.THROTTLE, 'throttle'], [c.t_shutdown, COL.SHUTDOWN, 'shutdown (T safe)']];
-  if (last.kind === 'pcm') lines.push([48.3, COL.pcm, 'PCM melts']);            // the PCM sets the temperature
-  else lines.push([last.setpoint, COL.grid, 'setpoint']);
-  if (last.kind === 'orbit') lines.push([c.t_freeze_warn, COL.guard, 'freeze guard'], [c.t_freeze, COL.freeze, 'freeze']);
+  lines.push([last.pcm_melt_c, COL.pcm, 'wax melts'], [last.setpoint, COL.grid, 'setpoint'],
+             [c.t_freeze_warn, COL.guard, 'freeze guard'], [c.t_freeze, COL.freeze, 'freeze']);
   for (const [v, col, l] of lines) {
     g.strokeStyle = g.fillStyle = col; g.beginPath(); g.moveTo(0, y(v)); g.lineTo(W, y(v)); g.stroke();
     g.fillText(`${l} ${v}°`, 4, y(v) - 3);
@@ -321,32 +398,20 @@ function draw() {
 addEventListener('resize', draw);
 
 // ---------- guided demo: [caption, actions, seconds] ----------
-// actions: reset | mode=X | speed=N | +flag (turn on) | -flag (turn off) | burst
-const DEMO = {
-  salt: [
-    ['Efficiency mode: the coolant floats toward 40 °C, so the room carries some of the heat and less salt is used.', 'reset mode=efficiency speed=1', 8],
-    ['Performance mode holds 25 °C. The brain plans the dosing 5 minutes ahead (model-predictive control) with a model of the room it learns as it runs.', 'mode=performance', 10],
-    ['A heavy job is scheduled 90 s ahead. The planner sees it coming and decides to pre-cool on its own.', 'burst', 14],
-    ['A sensor starts drifting slowly. The controller compares the sensors, spots the drift and drops that one before it can fool the vote.', '+sensor_drift', 14],
-    ['A cold plate clogs under heavy load. The coolant looks fine, but the chips heat up fast. The supervisor sees where they are heading and sheds load before they reach their limit.', '+spike +cold_plate', 12],
-    ['All sensors lost: with no trustworthy data it shuts the servers down safely.', '+sensors_lost', 8]],
-  pcm: [
-    ['Reusable PCM: sodium thiosulfate pentahydrate melts at 48.3 °C and pins the coolant just above it. One module works at a time.', 'reset mode=efficiency speed=1', 8],
-    ['A heavy sustained load (5.5 kW), shown at 5× speed. Each module melts in turn and is swapped out when spent.', '+spike speed=5', 12],
-    ['Once the modules are half spent, efficiency mode schedules a low-power state (load capped at 40%) so idle modules can re-solidify.', '', 12],
-    ['Load back to normal. Stealth mode: idle modules stay insulated, so they keep their heat instead of releasing it. Watch "Heat released to room" drop.', '-spike mode=stealth', 10],
-    ['A safe window opens: the fans come on and the modules dump their stored heat into the room.', '+window', 8]],
-  orbit: [
-    ['In orbit heat leaves only as radiation (Q = εσAT⁴). The radiators stay edge-on to the sun; efficiency mode floats near 28 °C.', 'reset mode=efficiency speed=1', 8],
-    ['Performance mode: radiators fully out, and the water drops toward 20 °C.', 'mode=performance', 10],
-    ['Servers go idle (5× speed). Without their waste heat the water would freeze, so the guard retracts the radiators, turns to the sun and runs a heater.', '+idle speed=5', 14],
-    ['Servers resume, and the radiators come back out.', '-idle speed=1', 8],
-    ['Close solar pass: sunlight ×3. Staying edge-on means the radiators absorb almost none of it.', '+solar_pass', 8],
-    ['ADCS fails, stuck facing the sun. The radiators now absorb more than they emit, so it hides them behind the MLI shield, then sheds load and shuts down safely.', '+adcs_fault', 16]]
-};
+// actions: reset | mode=X | speed=N | +flag (turn on) | -flag (turn off). At 1× the relay runs 50 s per second.
+const DEMO = [
+  ['Tier 1, radiators: they face away from the sun and shed the servers\' 500 W as infrared light, holding the water near 28 °C.', 'reset mode=efficiency speed=1', 6],
+  ['A traffic surge triples the load (shown 5× faster). The energy balance says the radiators alone would settle at 106 °C, so tier 2 kicks in: the wax melts and pins the water near 39 °C.', '+spike speed=5', 6],
+  ['The surge goes on. The watchdog warns as the wax runs low, then, tier 3, sheds load to 50%, where the radiators can cope.', '', 8],
+  ['Surge over: full power returns, and spare radiator capacity starts re-freezing the wax for next time.', '-spike', 6],
+  ['A cold plate clogs during another surge (back to 1×). The water looks fine, but the chips heat up fast, so the watchdog sheds load before they reach their limit.', '+spike +cold_plate speed=1', 8],
+  ['Servers go idle (20× faster). The wax\'s stored heat keeps the loop warm while it re-freezes, ready for the next surge.', '-spike -cold_plate +idle speed=20', 6],
+  ['With the wax solid and almost no load, the water would freeze. The freeze guard stows the radiators and routes the loop past the sun-facing side.', '', 6],
+  ['Close solar pass, and attitude control fails: the radiators are stuck facing a sun three times brighter. They are stowed behind the shield, the wax buys time, then the relay goes down safely.', '-idle +solar_pass +adcs_fault', 10]
+];
 async function doActions(text) {
   for (const a of text.split(' ').filter(Boolean)) {
-    if (a === 'reset' || a === 'burst') await post('scenario/' + a);
+    if (a === 'reset') await post('scenario/' + a);
     else if (a.startsWith('mode=')) await post('setup', {mode: a.slice(5)});
     else if (a.startsWith('speed=')) await post('setup', {speed: +a.slice(6)});
     else { const on = a[0] === '+', f = a.slice(1); if (!!last.flags[f] !== on) await post('scenario/' + f); }
@@ -355,7 +420,7 @@ async function doActions(text) {
 async function demo() {
   if (demoOn || !last) return; demoOn = true; showTab('dash'); $('#capcard').hidden = false; scrollTo(0, 0);
   try {
-    for (const [caption, actions, secs] of DEMO[last.kind]) { $('#cap').textContent = caption; await doActions(actions); await sleep(secs * 1000); }
+    for (const [caption, actions, secs] of DEMO) { $('#cap').textContent = caption; await doActions(actions); await sleep(secs * 1000); }
     await post('setup', {speed: 1});
     $('#cap').textContent = 'Demo finished. Press Reset, or try the scenario buttons yourself.'; await sleep(6000);
   } finally { $('#capcard').hidden = true; demoOn = false; }
@@ -426,11 +491,13 @@ async function startInBrowser() {
   if (!server) { go.disabled = false; go.textContent = '▶ Watch the 1-minute guided demo'; return; }
   $('#where').textContent = 'live server';
   const es = new EventSource('/api/stream');
-  es.onopen = () => { $('#dot').classList.add('live'); clearInterval(polling); polling = null; };
+  es.onopen = () => { setConn(true); clearInterval(polling); polling = null; };
   es.onmessage = e => onSnapshot(JSON.parse(e.data));
   es.onerror = () => {
-    $('#dot').classList.remove('live');
-    if (!polling) polling = setInterval(async () => { const s = await api('state'); hist = s.history; render(s); draw(); }, 1000);
+    setConn(false);
+    if (!polling) polling = setInterval(async () => {
+      try { const s = await api('state'); hist = s.history; render(s); draw(); } catch (e) {}   // server down: keep trying
+    }, 1000);
   };
 })();
 </script>

@@ -35,7 +35,7 @@ async def lifespan(_):
     engine.stop()
 
 
-app = FastAPI(title="Autonomous Thermal Controller", lifespan=lifespan)
+app = FastAPI(title="Relay Thermal Watchdog", lifespan=lifespan)
 
 
 @app.get("/api/state")
@@ -59,7 +59,7 @@ async def stream():
 
 @app.post("/api/setup")
 def setup(options: dict = Body(...)):
-    """Change environment, sink, mode and/or speed, e.g. {"env": "orbital", "mode": "stealth"}."""
+    """Change mode and/or speed, e.g. {"mode": "stealth", "speed": 5}."""
     try:
         return engine.setup(**options)
     except (ValueError, TypeError) as e:
@@ -68,7 +68,7 @@ def setup(options: dict = Body(...)):
 
 @app.post("/api/size")
 def size(options: dict = Body(...)):
-    """Sizing calculator, e.g. {"kw": 2, "hours": 1, "coolant_c": 40, "radiator_c": 30}."""
+    """Radiator + PCM sizing, e.g. {"normal_kw": 0.5, "surge_kw": 1.5, "surge_min": 30, "between_h": 6}."""
     try:
         return sizing(**options)
     except (ValueError, TypeError) as e:
