@@ -3,7 +3,7 @@ import random
 import pytest
 from fastapi.testclient import TestClient
 
-from coolant.core import MODES, Config, Controller, Engine, State, equilibrium, sizing
+from coolant.core import MODES, Config, Controller, Engine, Relay, State, equilibrium, sizing
 from coolant.server import app
 
 
@@ -49,7 +49,8 @@ def titles(e):
 def test_config_enforces_order_and_margins():
     Config().validate()
     for bad in ({"t_shutdown": 80.0}, {"t_warn": 40.0}, {"t_freeze_warn": 50.0},
-                {"chip_shutdown": 95.0}, {"chip_warn": 88.0}, {"drift_limit": 5.0}):
+                {"chip_shutdown": 95.0}, {"chip_warn": 88.0}, {"drift_limit": 5.0},
+                {"max_rate": 0.0}, {"glitch_steps": 11.0}, {"min_flow": 1.5}):
         with pytest.raises(ValueError):
             Config(**bad).validate()
 
@@ -259,6 +260,118 @@ def test_restart_after_a_shutdown_is_gentle():
     assert ctl.supervise(**cool) == (State.THROTTLE, "restarting at reduced load")
 
 
+# ---------- space hazards: radiation, pumps, the chip sensor, a frozen program ----------
+class Glitchy(Relay):
+    """A relay whose next reading can be corrupted on purpose, like a radiation bit flip."""
+    glitch = None
+
+    def temps(self):
+        t = super().temps()
+        if self.glitch:
+            t[:len(self.glitch)], self.glitch = self.glitch, None
+        return t
+
+
+@pytest.mark.parametrize("glitch", [[120.0, 140.0], [130.0, 130.0], [-30.0, -30.0], [500.0, 500.0, 500.0]])
+def test_one_radiation_glitch_never_shuts_a_healthy_relay_down(glitch):
+    h = Glitchy()
+    e = Engine(hal=h, tick_s=5.0)
+    run(e, 100)
+    h.glitch = glitch                   # two or three sensors corrupted in the same reading
+    seen, lowest_load = states_during(e, 240, lambda e: -e.last["load"])
+    assert seen == ["NORMAL"] and lowest_load == -1.0
+
+
+def test_a_radiation_storm_is_shrugged_off():
+    e = Engine()
+    run(e, 50)
+    e.scenario("radiation")             # sensor readings and the controller's memory both get hit
+    seen, _ = states_during(e, 3 * 720)
+    assert "THROTTLE" not in seen and "SHUTDOWN" not in seen and e.cfg == Config()
+
+
+def test_memory_scrub_repairs_a_corrupted_limit():
+    e = Engine()
+    run(e, 10)
+    e.ctl.cfg.t_shutdown = 960.0        # a bit flip switches the shutdown off
+    e.step()
+    assert e.cfg.t_shutdown == 60.0 and logged(e, "repaired a corrupted setting (t_shutdown)")
+    e.update_config({"t_shutdown": 62.0})
+    e.step()
+    assert e.cfg.t_shutdown == 62.0     # a deliberate change is kept
+
+
+def test_a_corrupted_limit_cannot_stop_a_shutdown():
+    e = Engine()
+    run(e, 50)
+    e.ctl.cfg.t_shutdown = 960.0
+    e.scenario("adcs_fault")
+    e.scenario("solar_pass")
+    seen, hottest = states_during(e, 6 * 720, lambda e: e.last["true_T"])
+    assert seen[-1] == "SHUTDOWN" and hottest < e.cfg.t_shutdown + 1
+
+
+def test_a_failed_pump_hands_over_to_the_backup_at_once():
+    e = Engine()
+    run(e, 100)
+    e.scenario("pump_fail")
+    seen, hottest_chip = states_during(e, 120, lambda e: e.hal.chip)
+    assert seen == ["WARNING"] and e.last["load"] == 1.0 and e.hal.cmd["pump"] == "B"
+    assert hottest_chip < 40 and titles(e) == ["Running on backup pump B"]
+
+
+def test_no_flow_at_all_shuts_down_within_seconds():
+    e = Engine()
+    run(e, 100)
+    e.scenario("pump_fail")
+    e.scenario("backup_fail")
+    seen, hottest_chip = states_during(e, 6, lambda e: e.hal.chip)       # 30 s
+    assert seen[-1] == "SHUTDOWN" and e.last["load"] == 0.0 and hottest_chip < e.cfg.chip_warn
+    assert "No coolant flow" in titles(e)
+    e.scenario("clear")                 # pumps repaired: off for 2 min, then a gentle restart
+    seen, _ = states_during(e, 400)
+    assert seen[:2] == ["SHUTDOWN", "THROTTLE"] and e.last["load"] == 1.0
+
+
+def test_losing_the_chip_sensor_holds_load_at_half_until_it_is_back():
+    e = Engine()
+    run(e, 100)
+    e.scenario("chip_sensor_lost")
+    run(e, 2)                           # a missing reading or two is tolerated
+    assert e.last["state"] == "NORMAL"
+    run(e, 2)
+    assert e.last["state"] == "THROTTLE" and e.last["load"] == 0.5
+    assert "Chip temperature sensor lost" in titles(e)
+    e.scenario("chip_sensor_lost")
+    seen, _ = states_during(e, 200)
+    assert seen == ["THROTTLE", "NORMAL"] and e.last["load"] == 1.0
+
+
+def test_a_frozen_program_is_caught_by_the_hardware_watchdog():
+    e = Engine()
+    run(e, 100)
+    e.scenario("hang")                  # no more commands, and no heartbeat
+    run(e, 5)
+    assert e.hal.cmd["load"] == 1.0     # 25 s: still inside the watchdog's 30 s
+    run(e, 2)
+    assert e.hal.cmd["load"] == 0.0 and e.hal.watchdog_tripped and logged(e, "hardware watchdog")
+    assert "Hardware watchdog cut server power" in titles(e)
+    e.scenario("hang")                  # the program is back: off for 2 min, then a gentle restart
+    seen, _ = states_during(e, 150)
+    assert seen == ["SHUTDOWN", "THROTTLE", "NORMAL"] and not e.hal.watchdog_tripped
+
+
+def test_out_near_mars_the_freeze_guard_holds_with_less_sun():
+    e = Engine()
+    e.scenario("far")
+    e.scenario("idle")
+    lo, heater = 1e9, 0.0
+    for _ in range(3000):
+        e.step()
+        lo, heater = min(lo, e.last["true_T"]), max(heater, e.hal.heater)
+    assert e.hal.sun_pass_w() < 140 and heater > 0 and lo > e.cfg.t_freeze
+
+
 # ---------- alerts ----------
 def test_no_alerts_when_all_is_well():
     for mode in MODES:
@@ -275,6 +388,9 @@ def test_no_alerts_when_all_is_well():
     ({"mode": "performance"}, ["spike", "cold_plate"], 120, "IT load cut to 50%"),
     ({}, ["solar_pass", "adcs_fault"], 200, "Attitude control failed"),
     ({}, ["idle"], 3000, "Freeze guard active"),
+    ({}, ["pump_fail"], 20, "Running on backup pump B"),
+    ({}, ["pump_fail", "backup_fail"], 10, "No coolant flow"),
+    ({}, ["chip_sensor_lost"], 10, "Chip temperature sensor lost"),
 ])
 def test_each_fault_raises_a_clear_alert_most_serious_first(kw, faults, steps, expected):
     e = Engine(**kw)
@@ -328,6 +444,9 @@ def test_api_roundtrip():
         assert c.post("/api/setup", json={"mode": "stealth", "speed": 5}).json()["options"] == {"mode": "stealth",
                                                                                               "speed": 5}
         assert c.post("/api/scenario/spike").json()["flags"]["spike"] is True
+        names = [n for n, _ in c.get("/api/state").json()["scenarios"]]
+        for name in ("pump_fail", "backup_fail", "radiation", "hang", "chip_sensor_lost", "far"):
+            assert name in names
         assert 3.6 < c.post("/api/size", json={}).json()["rows"][0]["area"] < 3.8
         assert c.post("/api/size", json={"normal_kw": -5}).status_code == 422
         page = c.get("/").text              # the dashboard, with its quality-of-life controls

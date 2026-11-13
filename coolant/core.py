@@ -16,11 +16,15 @@ cooling works in tiers, with a deterministic watchdog above all of them:
 
 Every control step:
   1. Sense      Three redundant temperature sensors are median-voted, and one that slowly drifts away
-                from the others is caught and dropped from the vote.
+                from the others is caught and dropped from the vote. A reading the coolant can't physically
+                produce (a radiation glitch) is ignored, and the safety limits are kept in three spare copies
+                that out-vote any bit flip in memory. The pump's flow and the chip sensor are watched too.
   2. Supervise  The watchdog (highest priority) watches the coolant AND the hottest chip, picks
                 NORMAL / WARNING / THROTTLE / SHUTDOWN and overrides everything below.
   3. Act        The mode (efficiency / performance / stealth) drives the radiators, the PCM valve and the
                 freeze guard, using an energy-balance forecast of where the coolant is heading.
+
+Every command carries a heartbeat, so a hardware watchdog can cut server power if the program ever freezes.
 
 Relay is a lumped-capacitance simulator for the demo. Real hardware plugs in by subclassing HAL (see README).
 """
@@ -115,16 +119,22 @@ class Config:
     max_sensor_gap: float = 3.0    # sensors further apart than this get voted on
     drift_limit: float = 0.6       # a sensor this far from the others for about 30 s is drifting
     lookahead_s: float = 300.0     # how far ahead the coolant trend is projected
+    max_rate: float = 0.5          # °C/s the coolant can't physically beat: a faster jump is a glitch (radiation)
+    glitch_steps: float = 3.0      # a sensor may glitch this many readings in a row before it counts as failed
+    min_flow: float = 0.5          # coolant flow under this fraction of normal means the pump has stopped
 
     def validate(self):
         coolant = (self.t_freeze < self.t_freeze_warn < self.restart_below < self.t_warn
                    < self.t_throttle < self.t_shutdown)
         chips = self.chip_warn < self.chip_throttle < self.chip_shutdown
         margins = self.t_damage - self.t_shutdown >= 10 and self.chip_damage - self.chip_shutdown >= 10
-        if not (coolant and chips and margins and 0 < self.drift_limit < self.max_sensor_gap):
+        sensing = (0 < self.drift_limit < self.max_sensor_gap and self.max_rate > 0
+                   and 0 <= self.glitch_steps <= 10 and 0 < self.min_flow < 1)
+        if not (coolant and chips and margins and sensing):
             raise ValueError("need freeze < freeze_warn < restart < warn < throttle < shutdown, "
-                             "chip_warn < chip_throttle < chip_shutdown, >=10 C margins before damage "
-                             "and 0 < drift_limit < max_sensor_gap")
+                             "chip_warn < chip_throttle < chip_shutdown, >=10 C margins before damage, "
+                             "0 < drift_limit < max_sensor_gap, max_rate > 0, glitch_steps 0-10 "
+                             "and 0 < min_flow < 1")
         return self
 
 
@@ -132,8 +142,27 @@ class Controller:
     """The watchdog and the brain. Hardware-agnostic: an observation dict goes in, a command dict comes out."""
 
     def __init__(self, cfg, mode="efficiency"):
-        self.cfg, self.mode = cfg, mode
+        self.mode = mode
+        self.set_config(cfg)
         self.reset()
+
+    def set_config(self, cfg):
+        """Use cfg, and keep three spare copies of it: radiation can flip bits in memory."""
+        self.cfg, self.copies = cfg, [asdict(cfg) for _ in range(3)]
+
+    def scrub(self, notes):
+        """Every step, majority-vote each setting across the live config and its three copies, and repair
+        whichever disagrees, so a bit flip can't quietly switch a protection off."""
+        for k, v in asdict(self.cfg).items():
+            votes = [v] + [copy[k] for copy in self.copies]
+            good = max(votes, key=votes.count)
+            if votes.count(good) < 3:           # no clear majority: fall back to the factory setting
+                good = getattr(Config(), k)
+            if v != good:
+                setattr(self.cfg, k, good)
+                notes.append(f"memory scrub: repaired a corrupted setting ({k})")
+            for copy in self.copies:
+                copy[k] = good
 
     def reset(self):
         self.slope = self.clock = self.throttle_until = self.shutdown_until = self.chip_slope = 0.0
@@ -141,6 +170,9 @@ class Controller:
         self.cold = self.hide = False
         self.pcm_mode, self.warming = "closed", {"wax": 0.0, "sun": 0.0, "heater": 0.0}
         self.resid, self.drifting, self.sensor_note = {}, set(), ""
+        self.bad, self.glitched, self.glitch_note_t = {}, set(), -1e9   # per sensor: impossible readings in a row
+        self.pump, self.no_flow_s, self.retry_at, self.no_flow = "A", 0.0, 0.0, False
+        self.chip_missing_s, self.chip_lost, self.beat = 0.0, False, 0
         self.state, self.reason = State.NORMAL, "ok"
 
     # ---------- 1. sense ----------
@@ -149,7 +181,34 @@ class Controller:
         Each sensor is also compared with the median of all of them over about 30 s, so one that
         slowly drifts is caught and dropped long before it is far enough off to be outvoted."""
         c = self.cfg
-        valid = {i: r for i, r in enumerate(readings) if r is not None and -40 < r < 150}
+        # A reading the coolant can't produce (out of range, or further from the last trusted value than it can
+        # move in dt) is a glitch, e.g. a radiation bit flip: ignore it. A sensor that keeps doing it for more
+        # than glitch_steps readings in a row is treated as failed and left to the vote below.
+        jump = None if self.prev is None else max(0.5, c.max_rate * dt)
+        valid, glitched = {}, []
+        for i, r in enumerate(readings):
+            if r is None:
+                continue
+            in_range = -40 < r < 150
+            if in_range and (jump is None or abs(r - self.prev) <= jump):
+                self.bad[i], valid[i] = 0, r
+                continue
+            self.bad[i] = self.bad.get(i, 0) + 1
+            if self.bad[i] <= c.glitch_steps:
+                glitched.append(i)
+            elif in_range:
+                valid[i] = r
+        self.glitched = set(glitched)
+        if glitched and self.clock - self.glitch_note_t >= 60:
+            self.glitch_note_t = self.clock
+            notes.append("glitch ignored (radiation?): " + ", ".join(f"S{i + 1} read {readings[i]:.0f} °C"
+                                                                       for i in glitched))
+        if glitched and not valid and self.prev is not None:
+            # every working sensor glitched at once: hold the last trusted value (still flag a dead sensor)
+            down = len(readings) > len(glitched)
+            if down:
+                self.sensor_note = "sensor missing: running on the others"
+            return self.prev, (1 if down else 0)
         if len(valid) >= 3:
             vals = sorted(valid.values())
             med, a = vals[len(vals) // 2], min(1.0, dt / 30.0)     # residuals averaged over about 30 s
@@ -165,13 +224,20 @@ class Controller:
                     notes.append(f"sensor S{i + 1} agrees again: back in the vote")
         good = sorted(r for i, r in valid.items() if i not in self.drifting)
         self.sensor_note = "sensor drifting: dropped from the vote" if self.drifting & set(valid) else ""
+        missing = len(readings) - len(glitched) > len(good)     # a sensor down for longer than a glitch
         if len(good) < 2:
+            if glitched and good:               # the others glitched this reading; this one agrees with history
+                if missing and not self.sensor_note:
+                    self.sensor_note = "sensor missing: running on the others"
+                return good[0], (1 if missing else 0)
+            self.sensor_note = "too few working sensors: assuming the worst"
             return (good[-1] if good else c.t_shutdown + 1), 2   # can't vote: assume the worst
-        health = 1 if len(good) < len(readings) else 0
+        health = 1 if missing else 0
         if good[-1] - good[0] > c.max_sensor_gap:
             med = good[len(good) // 2]
             kept = [g for g in good if abs(g - med) <= c.max_sensor_gap]
             if len(kept) < 2:
+                self.sensor_note = "sensors disagree: assuming the worst"
                 return good[-1], 2
             good, health = kept, 1
             self.sensor_note = self.sensor_note or "sensor fault: outvoted, maintenance needed"
@@ -194,7 +260,8 @@ class Controller:
         return o["pcm_melt"] >= 0.8 and needed, o["pcm_melt"] >= 0.97 and needed
 
     # ---------- 2. supervise (highest priority) ----------
-    def supervise(self, T, hot, health, low, out, chip=None, chip_full=None, chip_now=None, coolant_full=None):
+    def supervise(self, T, hot, health, low, out, chip=None, chip_full=None, chip_now=None, coolant_full=None,
+                  no_flow=False, chip_lost=False, tripped=False):
         """hot = coolant temperature, now or projected; chip = hottest chip, now or projected;
         chip_now = the hottest chip as measured right now; chip_full / coolant_full = where the chips /
         the coolant would settle if the full requested load were allowed back."""
@@ -203,6 +270,10 @@ class Controller:
         chip_now = chip if chip_now is None else chip_now
         chip_full = chip if chip_full is None else chip_full
         coolant_full = -1e9 if coolant_full is None else coolant_full
+        if tripped:
+            return State.SHUTDOWN, "the hardware watchdog cut the power: restarting gently"
+        if no_flow:                         # in free fall nothing moves the heat without a pump
+            return State.SHUTDOWN, "no coolant flow: both pumps stopped"
         # A projection can shed load. It can only shut the servers down once load is already shed and it
         # still says too hot; a real reading over a limit always can.
         shed = prev == State.THROTTLE
@@ -218,6 +289,8 @@ class Controller:
             return State.SHUTDOWN, "radiators can't carry the load and the wax is spent: waiting"
         if out:
             return State.THROTTLE, "wax spent and the radiators can't keep up: graceful power-down"
+        if chip_lost:                       # can't watch the chips, so don't run them hard
+            return State.THROTTLE, "chip temperature unknown: load held at half until the sensor is back"
         if prev == State.SHUTDOWN:                              # come back gently: half load, held >= 5 min
             return State.THROTTLE, "restarting at reduced load"
         # Once throttled, hold for >= 5 min, and until coolant and chips are under their warn limits,
@@ -246,6 +319,10 @@ class Controller:
             return State.WARNING, "freeze risk: guard active"
         if low:
             return State.WARNING, "wax nearly spent: radiators can't keep up"
+        if self.no_flow_s > 0:
+            return State.WARNING, "coolant flow lost: switching pumps"
+        if self.pump != "A":
+            return State.WARNING, "running on the backup pump"
         return State.NORMAL, "ok"
 
     def alerts(self, o, T, health, chip, low, out, load):
@@ -259,7 +336,8 @@ class Controller:
             found.append({"level": level, "title": title, "detail": detail})
 
         # warning reasons that get a more specific alert of their own below
-        covered = {self.sensor_note, "freeze risk: guard active", "wax nearly spent: radiators can't keep up"}
+        covered = {self.sensor_note, "freeze risk: guard active", "wax nearly spent: radiators can't keep up",
+                   "running on the backup pump"}
         if coolant_hot:
             covered.add("approaching limit: maximum cooling")
         if chips_hot:
@@ -271,7 +349,7 @@ class Controller:
         elif self.state == State.WARNING and self.reason not in covered:
             add("warning", self.reason[:1].upper() + self.reason[1:])   # e.g. chips approaching their limit
         temps = o["temps"]
-        dead = [i for i, r in enumerate(temps) if r is None or not -40 < r < 150]
+        dead = [i for i, r in enumerate(temps) if i not in self.glitched and (r is None or not -40 < r < 150)]
         if len(dead) == len(temps):
             add("critical", "All temperature sensors lost", "flying blind: servers kept off")
         else:
@@ -279,6 +357,8 @@ class Controller:
                 add("critical", "No trustworthy temperature reading", "too few sensors agree: assuming the worst")
             for i, r in enumerate(temps):
                 name = f"Sensor S{i + 1}"
+                if i in self.glitched:          # a one-off glitch, already ignored
+                    continue
                 if i in dead:
                     add("warning", f"{name} not responding", "running on the others")
                 elif i in self.drifting:
@@ -300,6 +380,12 @@ class Controller:
             add("critical", "Attitude control failed", "radiators stuck facing the sun")
         if self.hide:
             add("warning", "Radiators stowed behind the shield", "they would absorb more sunlight than they emit")
+        if self.no_flow:
+            add("critical", "No coolant flow", "both pumps stopped: servers off to protect the chips")
+        elif self.pump != "A":
+            add("warning", "Running on backup pump B", "pump A stopped moving the water: repair it")
+        if self.chip_lost:
+            add("warning", "Chip temperature sensor lost", "load held at half until it's back")
         if self.cold:
             w = self.warming
             add("warning", "Freeze guard active", f"radiators stowed; warming the loop: wax {w['wax']:.0f} W, "
@@ -365,7 +451,9 @@ class Controller:
         return {**cmd, "dep": dep, "pcm": pcm}
 
     def step(self, o, dt):
-        c, notes = self.cfg, []
+        notes = []
+        self.scrub(notes)                   # repair any corrupted limit before it is used
+        c = self.cfg
         T, health = self.fuse(o["temps"], dt, notes)
         if health == 2:                     # blind: freeze the predictor, restart it when data returns
             self.prev, self.slope = None, 0.0
@@ -377,6 +465,15 @@ class Controller:
         Tp = T + self.slope * c.lookahead_s
         hot, sp = max(T, Tp), self.setpoint(o)
         chip = o.get("chip_c")
+        if chip is not None and not -40 < chip < 150:
+            chip = None                     # an impossible reading: the chip sensor is broken
+        # Missing for 15 s means the chips can't be watched (a HAL without the chip_c key has no chip sensor).
+        self.chip_missing_s = self.chip_missing_s + dt if chip is None and "chip_c" in o else 0.0
+        lost = self.chip_missing_s >= 15.0
+        if lost != self.chip_lost:
+            notes.append("chip temperature sensor lost: load held at half until it's back" if lost
+                         else "chip temperature sensor back")
+        self.chip_lost = lost
         chip_hot = chip_full = None
         if chip is None:
             self.chip_prev, self.chip_slope = None, 0.0
@@ -399,14 +496,28 @@ class Controller:
             if cold != self.cold:
                 notes.append("freeze guard ON: radiators stowed, loop warmed" if cold else "freeze guard off")
             self.cold = cold
+        # The pump: in free fall the water only moves while a pump drives it. No flow: switch to the other pump
+        # at once, then keep trying the other one every minute. A HAL without a flow meter leaves "flow" out.
+        flow = o.get("flow")
+        if flow is None or flow >= c.min_flow:
+            self.no_flow_s, self.retry_at = 0.0, 0.0
+        else:
+            self.no_flow_s += dt
+            if self.no_flow_s >= self.retry_at:
+                other = "B" if self.pump == "A" else "A"
+                notes.append(f"no coolant flow on pump {self.pump}: switching to pump {other}")
+                self.pump, self.retry_at = other, self.no_flow_s + 60.0
+        self.no_flow = self.no_flow_s > 10.0    # the other pump has had 10 s to get the water moving
         prev = self.state
         coolant_full = eq_full if o["pcm_melt"] >= 0.9 else None    # with wax left, full load can resume
-        self.state, self.reason = self.supervise(T, hot, health, low, out, chip_hot, chip_full, chip, coolant_full)
+        self.state, self.reason = self.supervise(T, hot, health, low, out, chip_hot, chip_full, chip, coolant_full,
+                                                 self.no_flow, self.chip_lost, bool(o.get("watchdog_tripped")))
         if self.state == State.THROTTLE and prev != State.THROTTLE:
             self.throttle_until = self.clock + 300.0
         if self.state == State.SHUTDOWN and prev != State.SHUTDOWN:
             self.shutdown_until = self.clock + 120.0
-        cmd = {"load": LOAD_CAP[self.state]}
+        self.beat += 1                      # the heartbeat: hardware cuts server power if it stops changing
+        cmd = {"load": LOAD_CAP[self.state], "pump": self.pump, "heartbeat": self.beat}
         cooling_needed = hot >= c.t_warn or (chip_hot is not None and chip_hot >= c.chip_warn)
         before = self.pcm_mode
         cmd.update(self.act(o, T, Tp, sp, cooling_needed, health, eq_now, notes))
@@ -449,8 +560,9 @@ class HAL:
 
 
 class Relay(HAL):
-    """Solar-orbit communication relay: servers on a pumped 4 kg water loop, radiator panels that face away
-    from the sun (and can be stowed behind a shield), a wax PCM bank, a sun-side pass and a heater.
+    """Solar-orbit communication relay: servers on a 4 kg water loop driven by pump A (pump B is the backup),
+    radiator panels that face away from the sun (and can be stowed behind a shield), a wax PCM bank, a sun-side
+    pass, a heater, and a hardware watchdog that cuts server power if the heartbeat stops.
     The only way heat leaves is thermal radiation. Lumped-capacitance model, constants rough."""
     kind = "relay"
     BASE_W, SURGE = 500.0, 3.0                          # server heat, and the traffic-surge multiplier
@@ -459,6 +571,9 @@ class Relay(HAL):
     PCM_KG, PCM_UA = 6.0, 300.0                         # wax mass, and heat transfer with the valve open (W/K)
     SUN_PASS_M2, SUN_PASS_ALPHA = 0.25, 0.9             # sun-facing absorber the loop can be routed past
     HEATER_MAX, SURVIVAL_W = 300.0, 150.0
+    WATCHDOG_S = 30.0                                   # hardware watchdog: no heartbeat this long cuts server power
+    SEU_RATE = 0.05                                     # radiation storm: chance a reading is corrupted
+    FAR_AU = 1.52                                       # "out near Mars": sunlight falls with distance squared
 
     def __init__(self):
         self.reset()
@@ -466,13 +581,22 @@ class Relay(HAL):
     def reset(self):
         self.T, self.theta, self.dep, self.melt, self.drift, self.chip = 28.0, 180.0, 0.8, 0.0, 0.0, None
         self.heater = self.sun_in = self.pcm_flow = self.slewed = self.radiated = self.absorbed = 0.0
-        self.cmd = {"load": 1.0, "theta": 180.0, "dep": 0.8, "pcm": 0.0, "sun": 0.0, "heater": 0.0, "survival": False}
-        self.flags = {"spike": False, "solar_pass": False, "adcs_fault": False, "idle": False, "cold_plate": False,
-                      "window": False, "sensor_fault": False, "sensor_drift": False, "sensors_lost": False}
+        self.since_beat, self.last_beat, self.watchdog_tripped = 0.0, None, False
+        self.cmd = {"load": 1.0, "theta": 180.0, "dep": 0.8, "pcm": 0.0, "sun": 0.0, "heater": 0.0, "survival": False,
+                    "pump": "A"}
+        self.flags = {"spike": False, "solar_pass": False, "far": False, "adcs_fault": False, "idle": False,
+                      "cold_plate": False, "window": False, "pump_fail": False, "backup_fail": False,
+                      "radiation": False, "hang": False, "sensor_fault": False, "sensor_drift": False,
+                      "chip_sensor_lost": False, "sensors_lost": False}
 
     # ---------- physics ----------
-    def sunlight(self):
-        return SUN_1AU * (3.0 if self.flags["solar_pass"] else 1.0)     # a close pass: ~0.58 AU from the sun
+    def sunlight(self):                        # a close pass: ~0.58 AU from the sun; far: out near Mars
+        return SUN_1AU * (3.0 if self.flags["solar_pass"] else 1 / self.FAR_AU ** 2 if self.flags["far"] else 1.0)
+
+    def flow(self):
+        """Coolant flow as a fraction of normal. Only the selected pump moves the water."""
+        failed = self.flags["pump_fail"] if self.cmd.get("pump", "A") == "A" else self.flags["backup_fail"]
+        return 0.0 if failed else 1.0
 
     def exposure(self):
         return self.SHIELD_LEAK + (1.0 - self.SHIELD_LEAK) * self.dep
@@ -509,28 +633,39 @@ class Relay(HAL):
         if self.flags["sensor_fault"]:
             t[0] = 99.0
         t[1] += self.drift                            # 0 unless the "sensor drifts" scenario is on
+        if self.flags["radiation"]:                   # single-event upsets corrupt the odd reading
+            t = [random.uniform(-60, 200) if random.random() < self.SEU_RATE else r for r in t]
         return t
 
     def chip_target(self, utilization):
         rise = CHIP_RISE * (2.6 if self.flags["cold_plate"] else 1.0)   # clogged cold plate: chips run hot
+        rise *= 1.0 if self.flow() > 0 else 4.0                         # no flow: the cold plates are starved
         return self.T + rise * utilization
 
     def chip_c(self):
         if self.chip is None:                         # first reading: start in equilibrium
             self.chip = self.chip_target(self.utilization())
+        if self.flags["chip_sensor_lost"]:
+            return None                               # the servers' BMC stops reporting it
         return self.chip + random.gauss(0, 0.05)
 
     def read(self):
         return {"kind": "relay", "temps": self.temps(), "load_w": self.load_w, "demand_w": self.demand_w(),
                 "chip_c": self.chip_c(), "theta": self.theta, "dep": self.dep, "absorb_w": self.absorb_full(),
                 "emit_w": self.emit_full(), "adcs_ok": not self.flags["adcs_fault"], "window": self.flags["window"],
-                "pcm_melt": self.melt, "pcm_melt_c": PCM_MELT, "pcm_w": self.pcm_w(), "sun_w": self.sun_pass_w()}
+                "pcm_melt": self.melt, "pcm_melt_c": PCM_MELT, "pcm_w": self.pcm_w(), "sun_w": self.sun_pass_w(),
+                "flow": self.flow(), "pump": self.cmd.get("pump", "A"), "watchdog_tripped": self.watchdog_tripped}
 
     def apply(self, cmd):
+        if "heartbeat" in cmd and cmd["heartbeat"] != self.last_beat:   # the program is alive: re-arm the watchdog
+            self.last_beat, self.since_beat, self.watchdog_tripped = cmd["heartbeat"], 0.0, False
         self.cmd.update(cmd)
 
     def tick(self, dt):
         c = self.cmd
+        self.since_beat += dt
+        if self.since_beat > self.WATCHDOG_S:   # hardware watchdog: no heartbeat, so cut server power
+            self.watchdog_tripped, c["load"] = True, 0.0
         self.drift = self.drift + 0.015 * dt if self.flags["sensor_drift"] else 0.0   # sped up for the demo
         if self.flags["adcs_fault"]:
             self.theta = 20.0                  # stuck facing the sun
@@ -541,14 +676,17 @@ class Relay(HAL):
         self.dep += max(-0.02 * dt, min(0.02 * dt, c["dep"] - self.dep))
         survival = self.SURVIVAL_W if c.get("survival") and self.T < 10.0 else 0.0   # hardware thermostat
         self.heater = min(self.HEATER_MAX, max(0.0, c.get("heater", 0.0))) + survival
-        self.sun_in = max(0.0, min(1.0, c.get("sun", 0.0))) * self.sun_pass_w()
+        moving = self.flow() > 0                # still water: heat no longer reaches the radiators, wax or sun pass
+        self.sun_in = max(0.0, min(1.0, c.get("sun", 0.0))) * self.sun_pass_w() if moving else 0.0
         cap = self.PCM_KG * PCM_LATENT
-        want = max(0.0, min(1.0, c.get("pcm", 0.0))) * self.pcm_w()
+        want = max(0.0, min(1.0, c.get("pcm", 0.0))) * self.pcm_w() if moving else 0.0
         new = min(1.0, max(0.0, self.melt + want * dt / cap))
         self.pcm_flow, self.melt = (new - self.melt) * cap / dt, new     # positive: the wax took heat
-        self.radiated, self.absorbed = self.emit_full() * self.exposure(), self.absorb_full() * self.exposure()
+        self.radiated, self.absorbed = ((self.emit_full() * self.exposure(), self.absorb_full() * self.exposure())
+                                        if moving else (0.0, 0.0))
         q = self.load_w + self.heater + self.sun_in + self.absorbed - self.radiated - self.pcm_flow
-        self.T += q * dt / (self.WATER_KG * CP_WATER)
+        # with the water still, only the water at the cold plates takes the servers' heat, so it warms 4x faster
+        self.T += q * dt / (self.WATER_KG * (1.0 if moving else 0.25) * CP_WATER)
         target = self.chip_target(self.utilization())   # thermal mass: chips lag their load by ~CHIP_TAU
         self.chip = target if self.chip is None else self.chip + (target - self.chip) * (1 - math.exp(-dt / CHIP_TAU))
 
@@ -568,13 +706,20 @@ class Relay(HAL):
                 tile("PCM wax melted", f"{self.melt:.0%}", self.melt * 100,
                      f"{PCM_NAME}, melts at {PCM_MELT} °C · {pcm}"),
                 tile("Loop warming", f"{warm:.0f} W", None,
-                     f"sun-side pass {self.sun_in:.0f} W · heater {self.heater:.0f} W · only when it could freeze")]
+                     f"sun-side pass {self.sun_in:.0f} W · heater {self.heater:.0f} W · only when it could freeze"),
+                tile("Coolant pump", f"pump {self.cmd.get('pump', 'A')}", None,
+                     f"{self.flow():.0%} flow · the other pump takes over if the water stops · hardware watchdog "
+                     + ("TRIPPED: server power cut" if self.watchdog_tripped else "armed"))]
 
     def scenarios(self):
         return [("spike", "⚡ Traffic surge"), ("cold_plate", "🔥 Cold plate clogged"), ("idle", "💤 Servers idle"),
-                ("solar_pass", "☀ Close solar pass"), ("adcs_fault", "🛰 Attitude control fails"),
-                ("window", "🪟 Safe window"), ("sensor_drift", "📈 Sensor drifts"), ("sensor_fault", "🌡 1 sensor fails"),
-                ("sensors_lost", "🚫 All sensors lost"), ("clear", "✖ Clear all"), ("reset", "↺ Reset")]
+                ("solar_pass", "☀ Close solar pass"), ("far", "🪐 Out near Mars"),
+                ("adcs_fault", "🛰 Attitude control fails"), ("window", "🪟 Safe window"),
+                ("pump_fail", "💧 Pump fails"), ("backup_fail", "💧 Backup pump fails"),
+                ("radiation", "☢ Radiation storm"), ("hang", "🧊 Program freezes"),
+                ("sensor_drift", "📈 Sensor drifts"), ("sensor_fault", "🌡 1 sensor fails"),
+                ("chip_sensor_lost", "🌡 Chip sensor fails"), ("sensors_lost", "🚫 All sensors lost"),
+                ("clear", "✖ Clear all"), ("reset", "↺ Reset")]
 
 
 class Engine:
@@ -589,7 +734,7 @@ class Engine:
         self.hal = hal or Relay()
         self.dt = tick_s if hal else DT                 # real hardware runs in real time
         self.ctl = Controller(self.cfg, mode)
-        self.t, self.prev_state = 0.0, None
+        self.t, self.prev_state, self.tripped = 0.0, None, False
         self.hist, self.events = deque(maxlen=900), deque(maxlen=40)
         self.step()
 
@@ -612,18 +757,40 @@ class Engine:
     def step(self):
         with self.lock:
             h = self.hal
-            cmd, info = self.ctl.step(h.read(), self.dt)
-            if info["state"] != self.prev_state:
-                self.log(f'{info["state"]}: {info["reason"]}')
-                self.prev_state = info["state"]
-            for note in info.pop("notes"):
-                self.log(note)
-            h.apply(cmd)
+            frozen = h.flags.get("hang", False)  # demo: the control program has stopped responding
+            if frozen:                           # no new commands, no heartbeat: only the physics goes on
+                info = {k: v for k, v in self.last.items() if k not in ("t", "true_T", "kind", "load", "tiles")}
+            else:
+                if h.flags.get("radiation") and random.random() < 0.02:
+                    # a radiation storm also flips bits in the controller's memory: corrupt one safety setting
+                    k = random.choice([f.name for f in fields(Config)])
+                    setattr(self.ctl.cfg, k, getattr(self.ctl.cfg, k) * random.choice((0.0, 4.0, -1.0)))
+                cmd, info = self.ctl.step(h.read(), self.dt)
+                if info["state"] != self.prev_state:
+                    self.log(f'{info["state"]}: {info["reason"]}')
+                    self.prev_state = info["state"]
+                for note in info.pop("notes"):
+                    self.log(note)
+                h.apply(cmd)
             h.tick(self.dt)
             self.t += self.dt
+            tripped = getattr(h, "watchdog_tripped", False)
+            if tripped != self.tripped:
+                self.tripped = tripped
+                self.log("hardware watchdog: no heartbeat, server power cut" if tripped
+                         else "heartbeat back: hardware watchdog re-armed")
+            load = h.cmd["load"] if frozen else cmd["load"]
+            if frozen:
+                info["alerts"] = [{"level": "critical", "title": "Control program not responding",
+                                   "detail": "no heartbeat: the hardware watchdog cuts server power after "
+                                             f"{getattr(h, 'WATCHDOG_S', 30):.0f} s"}]
+                if tripped:
+                    info["alerts"].append({"level": "critical", "title": "Hardware watchdog cut server power",
+                                           "detail": "it re-arms when the heartbeat comes back"})
+                    info["state"], info["reason"] = "SHUTDOWN", "hardware watchdog: control program not responding"
             true_t = round(getattr(h, "T", info["T"]), 2)
-            self.last = {**info, "t": self.t, "true_T": true_t, "kind": h.kind, "load": cmd["load"],
-                         "tiles": h.tiles(info) + [tile("IT load allowed", f'{cmd["load"]:.0%}', cmd["load"] * 100)]}
+            self.last = {**info, "t": self.t, "true_T": true_t, "kind": h.kind, "load": load,
+                         "tiles": h.tiles(info) + [tile("IT load allowed", f'{load:.0%}', load * 100)]}
             self.hist.append({"t": self.t, "T": true_t, "act": info["act"], "state": info["state"]})
 
     def scenario(self, name):
@@ -634,7 +801,7 @@ class Engine:
                 self.ctl.reset()
                 self.hist.clear()
                 self.events.clear()
-                self.t, self.prev_state = 0.0, None
+                self.t, self.prev_state, self.tripped = 0.0, None, False
                 self.step()
             elif name == "clear":               # every scenario off, without resetting the simulation
                 for k in h.flags:
@@ -653,7 +820,8 @@ class Engine:
             if not set(patch) <= known:
                 raise ValueError(f"unknown keys: {sorted(set(patch) - known)}")
             new = Config(**{**asdict(self.cfg), **{k: float(v) for k, v in patch.items()}}).validate()
-            self.cfg = self.ctl.cfg = new
+            self.cfg = new
+            self.ctl.set_config(new)             # also refreshes the spare copies the memory scrub votes with
             self.log("config updated")
             return asdict(new)
 
