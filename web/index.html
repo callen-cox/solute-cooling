@@ -149,7 +149,7 @@ input{background:var(--bg);color:var(--tx);border:1px solid var(--line);border-r
   Chips: warn 80, cut 85, off 90 °C, damage 100 °C. The config refuses any setting with under 10 °C of margin. The freeze guard protects the bottom of the range.</div></div>
 
  <div class="card"><h3>Every step (every 5 s of relay time)</h3><ol>
-  <li><b>Sense</b>: three sensors are median-voted, so a broken one is outvoted. Each is also compared with the others over about 30 seconds, so one that slowly drifts is dropped before it can fool the vote. With no usable data it assumes the worst and shuts down.</li>
+  <li><b>Sense</b>: three sensors are median-voted, so a broken one is outvoted. Each is also compared with the others over about 30 seconds, so one that slowly drifts is dropped before it can fool the vote. A reading the water can't physically produce, like a radiation glitch, is ignored. With no usable data it assumes the worst and shuts down.</li>
   <li><b>Forecast</b>: an energy balance (server heat + absorbed sunlight = radiated heat) gives the temperature the water would settle at with the radiators fully out. Above the wax's melting point, the radiators can't keep up on their own. The trend is also projected 5 minutes ahead.</li>
   <li><b>Supervise</b>: the ladders above, for the coolant and the hottest chip. Everything wrong right now is listed in the alerts panel, under a flashing red warning sign, most serious first.</li>
   <li><b>Act</b>: the mode sets the radiators, the wax valve and the freeze guard (below).</li></ol></div>
@@ -157,9 +157,11 @@ input{background:var(--bg);color:var(--tx);border:1px solid var(--line);border-r
  <div class="card"><h3>The watchdog: what makes it safe</h3><ul>
   <li><b>A forecast alone never shuts the relay down.</b> Forecasts shed load early. A shutdown needs a real reading over the limit, or a forecast that still says too hot after load was shed.</li>
   <li><b>It watches the chips</b>, not just the water. A clogged cold plate can cook a chip while the coolant looks fine, so it projects the chips' trend, sheds load before they reach their limit, and won't go back to full power while that would overheat them.</li>
-  <li><b>It catches bad sensors</b>, both sudden failures (outvoted) and slow drift (dropped before it matters).</li>
+  <li><b>It catches bad sensors</b>, both sudden failures (outvoted) and slow drift (dropped before it matters). If the chip sensor itself fails, it holds the load at half until it's back.</li>
+  <li><b>It survives radiation.</b> Out in solar orbit there's no planet's magnetic field to block it, so readings and memory get corrupted now and then. One-off impossible readings are ignored, and the safety limits are kept in three spare copies that out-vote a flipped bit every step. Try the ☢ Radiation storm.</li>
+  <li><b>It watches the pump.</b> In free fall the water only moves while a pump drives it. If the flow stops, pump B takes over at once; if both stop, the servers go down within seconds and the radiators are stowed so the standing water doesn't freeze.</li>
   <li><b>It doesn't flap.</b> Load stays shed for at least 5 minutes, and until full power would fit again. After a shutdown it stays off at least 2 minutes and restarts at half load.</li>
-  <li><b>It fails safe.</b> With no trustworthy reading it shuts the servers down and stows the radiators, and a survival heater with its own hardware thermostat keeps the water liquid. If the control software itself crashes, a software watchdog cuts server power.</li></ul></div>
+  <li><b>It fails safe.</b> With no trustworthy reading it shuts the servers down and stows the radiators, and a survival heater with its own hardware thermostat keeps the water liquid. If the control software crashes, it cuts server power. If it freezes, its heartbeat stops and after 30 s a hardware watchdog puts the relay in its safe state: servers off, radiators stowed, survival thermostat on.</li></ul></div>
 
  <div class="card"><h3>The physics, honestly</h3><ul>
   <li><b>In orbit, hot water doesn't rise.</b> Convection needs gravity, so the loop has a small pump. A loop heat pipe, which moves its fluid with a wick, would do it with no pump at all.</li>
@@ -459,15 +461,28 @@ def tick(since):                      # one 0.1 s tick of the control loop, like
         engine.step()
     return json.dumps(engine.snapshot(since=since))
 `;
+const lastLine = m => String(m).trim().split('\n').pop();
+const MISMATCH = e => 'The page could not show the data (' + lastLine(e.message) + '). Upload web/index.html and coolant/core.py from the same version.';
+function showError(msg) { $('#sub').textContent = msg; $('#sub').style.color = COL.SHUTDOWN; }
 async function startInBrowser() {
+  if (location.protocol === 'file:')
+    throw new Error('This page was opened as a file, and browsers block it from starting the controller that way. Open the GitHub Pages link instead, or run "python3 -m coolant.server" and go to http://localhost:8000.');
   $('#sub').textContent = 'No server here, so the controller is starting inside your browser (Python via WebAssembly). The first load takes 10 to 20 seconds…';
-  await new Promise((ok, fail) => { const s = document.createElement('script'); s.src = PYODIDE; s.onload = ok; s.onerror = fail; document.head.append(s); });
-  const py = await loadPyodide();
-  py.FS.writeFile('core.py', await (await fetch('../coolant/core.py')).text());
-  py.runPython(BRIDGE);
+  await new Promise((ok, fail) => { const s = document.createElement('script'); s.src = PYODIDE; s.onload = ok;
+    s.onerror = () => fail(new Error('Could not download Python from cdn.jsdelivr.net. Check the internet connection, or try another network: some school and work networks block it.'));
+    document.head.append(s); });
+  const py = await loadPyodide().catch(e => { throw new Error('Could not start Python in this browser (' + lastLine(e.message) + '). Try an up-to-date Chrome, Safari or Firefox.'); });
+  const src = await fetch('../coolant/core.py');
+  if (!src.ok) throw new Error(`Could not find coolant/core.py on this site (error ${src.status}). Check that core.py is inside the coolant folder.`);
+  py.FS.writeFile('core.py', await src.text());
+  try { py.runPython(BRIDGE); }
+  catch (e) { throw new Error('coolant/core.py did not start (' + lastLine(e.message) + '). Upload web/index.html and coolant/core.py from the same version.'); }
   const call = py.globals.get('call'), tick = py.globals.get('tick');
   local = async (path, body) => JSON.parse(call(path, body ? JSON.stringify(body) : ''));
-  setInterval(() => onSnapshot(JSON.parse(tick(hist.length ? hist[hist.length - 1].t : -1))), 100);
+  const timer = setInterval(() => {
+    try { onSnapshot(JSON.parse(tick(hist.length ? hist[hist.length - 1].t : -1))); }
+    catch (e) { clearInterval(timer); showError(MISMATCH(e)); }
+  }, 100);
   $('#dot').classList.add('live'); $('#dot').title = 'running in your browser';
   $('#where').textContent = 'running in your browser';
 }
@@ -484,10 +499,11 @@ async function startInBrowser() {
     try { await startInBrowser(); }
     catch (e) {
       $('#welcome').hidden = true;
-      $('#sub').textContent = 'Could not start the controller in this browser. Check the internet connection and refresh.'; return;
+      showError(e.message || 'Could not start the controller in this browser.'); return;
     }
   }
-  const s = await api('state'); hist = s.history; render(s); draw();
+  try { const s = await api('state'); hist = s.history; render(s); draw(); }
+  catch (e) { $('#welcome').hidden = true; showError(MISMATCH(e)); return; }
   if (!server) { go.disabled = false; go.textContent = '▶ Watch the 1-minute guided demo'; return; }
   $('#where').textContent = 'live server';
   const es = new EventSource('/api/stream');
